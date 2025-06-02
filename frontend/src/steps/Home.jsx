@@ -27,12 +27,16 @@ const Home = () => {
   };
 
   const handleNavigation = (path) => {
-    if (!user && path !== '/learn-more') {
-      toast.error('Please login to access the dashboard');
-      navigate('/auth/login');
-      return;
+    if (path === '/dashboard') {
+      if (!user) {
+        toast.error('Please login to access the dashboard');
+        navigate('/login');
+      } else {
+        navigate('/dashboard');
+      }
+    } else {
+      navigate(path);
     }
-    navigate(path);
   };
 
   return (
@@ -70,16 +74,15 @@ const Home = () => {
                 Dashboard
               </Button>
             ) : (
-              <>
-                <Button 
+              <>                <Button 
                   variant="ghost" 
-                  onClick={() => navigate('/auth/login')}
+                  onClick={() => navigate('/login')}
                   className="text-gray-600 hover:bg-gray-50"
                 >
                   Sign In
                 </Button>
                 <Button 
-                  onClick={() => navigate('/auth/signup')}
+                  onClick={() => navigate('/signup')}
                   className="bg-gradient-to-r from-blue-600 to-emerald-500 hover:from-blue-700 hover:to-emerald-600 text-white"
                 >
                   Get Started

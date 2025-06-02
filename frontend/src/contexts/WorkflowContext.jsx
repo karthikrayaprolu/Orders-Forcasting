@@ -1,62 +1,139 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 
 // Create the context
-const WorkflowContext = createContext();
+const WorkflowContext = createContext({});
 
 export const WorkflowProvider = ({ children }) => {
-  const [currentStep, setCurrentStep] = useState("home");
-  const [database, setDatabase] = useState({
-    databaseType: "mongodb",
-  });
-  const [process, setProcess] = useState({
-    timeColumn: "",
-    targetVariable: "",
-    frequency: "daily",
-    features: [],
-  });
-  const [model, setModel] = useState({
-    modelType: "Prophet",
-    hyperparameterTuning: false,
-    ensembleLearning: false,
-    transferLearning: false,
-  });
-  const [results, setResults] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [availableTables, setAvailableTables] = useState([]);
-  const [availableColumns, setAvailableColumns] = useState([]);
-
-  // 🔁 Listen to "change-step" events dispatched from UI
-  useEffect(() => {
-    const handleStepChange = (e) => {
-      if (typeof e.detail === "string") {
-        setCurrentStep(e.detail);
-      }
-    };
-
-    window.addEventListener("change-step", handleStepChange);
-    return () => window.removeEventListener("change-step", handleStepChange);
-  }, []);
-
-  const value = {
-    currentStep,
-    setCurrentStep,
-    database,
-    setDatabase,
-    process,
-    setProcess,
-    model,
-    setModel,
-    results,
-    setResults,
-    isLoading,
-    setIsLoading,
-    availableTables,
-    setAvailableTables,
-    availableColumns,
-    setAvailableColumns,
+  const STEPS = {
+    DATABASE: "database",
+    PROCESS: "process",
+    TRAIN: "train",
+    RESULTS: "results",
   };
 
-  return <WorkflowContext.Provider value={value}>{children}</WorkflowContext.Provider>;
+  // Core workflow states
+  const [currentStep, setCurrentStep] = useState(STEPS.DATABASE);
+  const [completedSteps, setCompletedSteps] = useState(new Set());
+  
+  // Data and model states
+  const [uploadedFiles, setUploadedFiles] = useState(null);
+  const [process, setProcess] = useState({
+    horizon: 30,
+    timePeriod: 'day',
+    aggregationMethod: 'mean',
+    selectedTargets: []
+  });
+  
+  // Model configuration states
+  const [modelSelections, setModelSelections] = useState({});
+  const [results, setResults] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
+  // Save state to localStorage when it changes
+  useEffect(() => {
+    if (process) {
+      localStorage.setItem('forecastProcess', JSON.stringify(process));
+    }
+    if (modelSelections) {
+      localStorage.setItem('modelSelections', JSON.stringify(modelSelections));
+    }
+    if (results) {
+      localStorage.setItem('forecastResults', JSON.stringify(results));
+    }
+  }, [process, modelSelections, results]);
+  // Load saved state on initial mount
+  useEffect(() => {
+    const savedProcess = localStorage.getItem('forecastProcess');
+    const savedSelections = localStorage.getItem('modelSelections');
+    const savedResults = localStorage.getItem('forecastResults');
+
+    if (savedProcess) {
+      setProcess(JSON.parse(savedProcess));
+    }
+    if (savedSelections) {
+      setModelSelections(JSON.parse(savedSelections));
+    }
+    if (savedResults) {
+      setResults(JSON.parse(savedResults));
+    }
+  }, []);
+
+  const completeStep = (step) => {
+    setCompletedSteps((prev) => new Set([...prev, step]));
+    // Move to next step
+    switch (step) {
+      case STEPS.DATABASE:
+        setCurrentStep(STEPS.PROCESS);
+        break;
+      case STEPS.PROCESS:
+        setCurrentStep(STEPS.TRAIN);
+        break;
+      case STEPS.TRAIN:
+        setCurrentStep(STEPS.RESULTS);
+        break;
+      default:
+        break;
+    }
+  };
+
+  const resetWorkflow = () => {
+    setCurrentStep(STEPS.DATABASE);
+    setCompletedSteps(new Set());
+    setUploadedFiles(null);
+    setProcess({
+      horizon: 30,
+      timePeriod: 'day',
+      aggregationMethod: 'mean',
+      selectedTargets: []
+    });
+    setModelSelections({});
+    setResults(null);
+    setError(null);
+    localStorage.removeItem('forecastProcess');
+    localStorage.removeItem('modelSelections');
+  };
+
+  const canAccessStep = (step) => {
+    const stepOrder = Object.values(STEPS);
+    const currentStepIndex = stepOrder.indexOf(currentStep);
+    const targetStepIndex = stepOrder.indexOf(step);
+    return targetStepIndex <= currentStepIndex || completedSteps.has(step);
+  };
+
+  const value = {
+    // Step management
+    currentStep,
+    setCurrentStep,
+    completedSteps,
+    completeStep,
+    canAccessStep,
+    resetWorkflow,
+    STEPS,
+
+    // Data and process management
+    uploadedFiles,
+    setUploadedFiles,
+    process,
+    setProcess,
+
+    // Model and results management
+    modelSelections,
+    setModelSelections,
+    results,
+    setResults,
+
+    // UI states
+    isLoading,
+    setIsLoading,
+    error,
+    setError
+  };
+
+  return (
+    <WorkflowContext.Provider value={value}>
+      {children}
+    </WorkflowContext.Provider>
+  );
 };
 
 export const useWorkflow = () => {

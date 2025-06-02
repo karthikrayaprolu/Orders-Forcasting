@@ -3,6 +3,7 @@ import { uploadFiles } from '../services/api';
 import { motion } from 'framer-motion';
 import { FiUpload, FiFile, FiCheckCircle } from 'react-icons/fi';
 import { Button } from '@/components/ui/button';
+import { useWorkflow } from '@/contexts/WorkflowContext';
 
 const DataStep = ({ onComplete }) => {
     const [files, setFiles] = useState({
@@ -13,6 +14,7 @@ const DataStep = ({ onComplete }) => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [success, setSuccess] = useState(false);
+    const { completeStep, STEPS } = useWorkflow();
 
     const handleFileChange = (e, fileType) => {
         const file = e.target.files[0];
@@ -36,7 +38,10 @@ const DataStep = ({ onComplete }) => {
 
             await uploadFiles(files.header, files.items, files.workstation);
             setSuccess(true);
-            setTimeout(() => onComplete(), 1500);
+            // Complete this step and move to next
+            setTimeout(() => {
+                completeStep(STEPS.DATABASE);
+            }, 1500);
         } catch (err) {
             setError(err.message || 'Failed to upload files. Please try again.');
         } finally {

@@ -1,4 +1,4 @@
-const API_BASE_URL = 'http://127.0.0.1:8000';
+const API_BASE_URL = 'http://127.0.0.1:8080';
 
 export const uploadFiles = async (headerFile, itemsFile, workstationFile) => {
     const formData = new FormData();
@@ -9,11 +9,16 @@ export const uploadFiles = async (headerFile, itemsFile, workstationFile) => {
     try {
         const response = await fetch(`${API_BASE_URL}/upload`, {
             method: 'POST',
+            credentials: 'include',
+            headers: {
+                'Accept': 'application/json'
+            },
             body: formData,
         });
         
         if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+            const errorData = await response.json().catch(() => null);
+            throw new Error(errorData?.error || `HTTP error! status: ${response.status}`);
         }
         
         return await response.json();
@@ -23,41 +28,75 @@ export const uploadFiles = async (headerFile, itemsFile, workstationFile) => {
     }
 };
 
-export const getForecast = async (targets, models, horizon, outputFormat = 'json') => {
+export const getForecast = async (targets, models, horizon, timePeriod = 'day', aggregationMethod = 'mean', outputFormat = 'json') => {
     try {
+        const payload = {
+            targets,
+            models,
+            horizon,
+            time_period: timePeriod,
+            aggregation_method: aggregationMethod,
+            output_format: outputFormat
+        };
+
+        console.log('Sending forecast request:', payload);
+
         const response = await fetch(`${API_BASE_URL}/forecast`, {
             method: 'POST',
+            credentials: 'include',
             headers: {
                 'Content-Type': 'application/json',
+                'Accept': '*/*'
             },
-            body: JSON.stringify({
-                targets,
-                models,
-                horizon,
-                output_format: outputFormat
-            }),
+            body: JSON.stringify(payload),
         });
 
         if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+            const errorText = await response.text();
+            let errorMessage;
+            try {
+                const errorData = JSON.parse(errorText);
+                errorMessage = errorData.error || errorData.detail || 'Unknown error';
+            } catch {
+                errorMessage = errorText || `HTTP error! status: ${response.status}`;
+            }
+            throw new Error(errorMessage);
         }
 
-        // Handle different response types
-        if (outputFormat === 'json') {
-            return await response.json();
-        } else if (outputFormat === 'csv' || outputFormat === 'excel') {
-            const blob = await response.blob();
-            const fileName = `forecast.${outputFormat}`;
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = fileName;
-            document.body.appendChild(a);
-            a.click();
-            window.URL.revokeObjectURL(url);
-            document.body.removeChild(a);
-            return true;
+        // Handle all formats as downloads
+        const blob = await (outputFormat === 'json' ? 
+            new Blob([JSON.stringify(await response.json(), null, 2)], { type: 'application/json' }) : 
+            response.blob());
+
+        const disposition = response.headers.get('Content-Disposition');
+        let filename;
+        
+        if (disposition && disposition.includes('filename=')) {
+            filename = disposition.split('filename=')[1].replace(/["']/g, '');
+        } else {
+            const extension = outputFormat === 'excel' ? 'xlsx' : outputFormat;
+            const timestamp = new Date().toISOString().slice(0,19).replace(/[:]/g, '-');
+            filename = `forecast_${timePeriod}_${aggregationMethod}_${timestamp}.${extension}`;
         }
+
+        // Create download link and trigger download
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.style.display = 'none';
+        link.href = url;
+        link.download = filename;
+        
+        // Add to document, click, and cleanup
+        document.body.appendChild(link);
+        link.click();
+        
+        // Cleanup after a short delay
+        setTimeout(() => {
+            document.body.removeChild(link);
+            window.URL.revokeObjectURL(url);
+        }, 100);
+        
+        return true;
     } catch (error) {
         console.error('Forecast error:', error);
         throw error;

@@ -24,6 +24,13 @@ const Dashboard = ({ currentStep, setCurrentStep, forecastData, onStepComplete }
     }
   };
 
+  const handleHomeClick = () => {
+    // You might want to navigate to the home page or reset the workflow
+    // This assumes you have a way to handle navigation (like React Router)
+    console.log("Navigating to home");
+    // Example with React Router: history.push('/');
+  };
+
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -35,6 +42,7 @@ const Dashboard = ({ currentStep, setCurrentStep, forecastData, onStepComplete }
               setCurrentStep(step);
             }
           }}
+          onHomeClick={handleHomeClick}  // Pass home click handler to header
         />
         <main className="py-10">
           {renderStep()}

@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import { lazy, Suspense } from 'react';
-import LearnMore from './LearnMore';
+import LearnMore from '../pages/LearnMore';
 
 // Lazy load animated chart
 const AnimatedOrdersChart = lazy(() => import('@/components/AnimatedChart'));

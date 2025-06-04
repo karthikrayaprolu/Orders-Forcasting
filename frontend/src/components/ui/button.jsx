@@ -17,13 +17,11 @@ const buttonVariants = ({
     accent: "bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white shadow-lg hover:shadow-xl",
     ghost: "hover:bg-gray-100 text-gray-700",
     link: "text-blue-600 hover:underline underline-offset-4"
-  };
-
-  const sizes = {
-    default: "px-8 py-6 text-lg",
-    sm: "px-6 py-4 text-base",
-    lg: "px-10 py-6 text-lg font-bold",
-    icon: "p-4"
+  };  const sizes = {
+    default: "px-3 py-1.5 text-base",
+    sm: "px-2 py-1 text-sm",
+    lg: "px-4 py-2 text-lg font-medium",
+    icon: "p-1.5"
   };
 
   return cn(

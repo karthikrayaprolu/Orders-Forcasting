@@ -2,33 +2,39 @@ import React from 'react';
 import WorkflowHeader from '../components/WorkflowHeader';
 import DataStep from '../steps/DataStep';
 import ProcessStep from '../steps/ProcessStep';
+import TrainStep from '../steps/TrainStep';
 import Results from '../steps/Results';
+import { useWorkflow } from '../contexts/WorkflowContext';
 
 const steps = [
   { id: 0, title: 'Upload Data', description: 'Upload your CSV files' },
   { id: 1, title: 'Configure Forecast', description: 'Set forecast parameters' },
-  { id: 2, title: 'Results', description: 'View forecast results' }
+  { id: 2, title: 'Train Models', description: 'Configure and train models' },
+  { id: 3, title: 'Results', description: 'View forecast results' }
 ];
 
-const Dashboard = ({ currentStep, setCurrentStep, forecastData, onStepComplete }) => {
+const Dashboard = () => {
+  const { currentStep, setCurrentStep, canAccessStep, STEPS } = useWorkflow();
+
   const renderStep = () => {
     switch (currentStep) {
-      case 0:
-        return <DataStep onComplete={() => onStepComplete()} />;
-      case 1:
-        return <ProcessStep onComplete={(data) => onStepComplete(data)} />;
-      case 2:
-        return <Results forecasts={forecastData} />;
+      case STEPS.DATABASE:
+        return <DataStep />;
+      case STEPS.PROCESS:
+        return <ProcessStep />;
+      case STEPS.TRAIN:
+        return <TrainStep />;
+      case STEPS.RESULTS:
+        return <Results />;
       default:
-        return <DataStep onComplete={() => onStepComplete()} />;
+        return <DataStep />;
     }
   };
 
-  const handleHomeClick = () => {
-    // You might want to navigate to the home page or reset the workflow
-    // This assumes you have a way to handle navigation (like React Router)
-    console.log("Navigating to home");
-    // Example with React Router: history.push('/');
+  const handleStepClick = (stepId) => {
+    if (canAccessStep(stepId)) {
+      setCurrentStep(stepId);
+    }
   };
 
   return (
@@ -37,12 +43,7 @@ const Dashboard = ({ currentStep, setCurrentStep, forecastData, onStepComplete }
         <WorkflowHeader
           steps={steps}
           currentStep={currentStep}
-          onStepClick={(step) => {
-            if (step < currentStep) {
-              setCurrentStep(step);
-            }
-          }}
-          onHomeClick={handleHomeClick}  // Pass home click handler to header
+          onStepClick={handleStepClick}
         />
         <main className="py-10">
           {renderStep()}

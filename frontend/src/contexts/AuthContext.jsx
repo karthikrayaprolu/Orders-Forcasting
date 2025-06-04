@@ -59,16 +59,15 @@ export const AuthProvider = ({ children }) => {
             setError(error.message);
             throw error;
         }
-    };
-
-    const value = {
+    };    const value = {
         user,
         loading,
         error,
         signUp: handleSignUp,
         login: handleLogin,
         loginWithGoogle: handleGoogleLogin,
-        logout: handleLogout
+        logout: handleLogout,
+        signOut: handleLogout  // Adding signOut as an alias for consistency
     };
 
     return (

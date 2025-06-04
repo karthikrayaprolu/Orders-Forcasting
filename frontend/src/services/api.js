@@ -28,7 +28,7 @@ export const uploadFiles = async (headerFile, itemsFile, workstationFile) => {
     }
 };
 
-export const getForecast = async (targets, models, horizon, timePeriod = 'day', aggregationMethod = 'mean', outputFormat = 'json') => {
+export const getForecast = async (targets, models, horizon, timePeriod = 'day', aggregationMethod = 'mean', outputFormat = 'json', forDownload = false) => {
     try {
         const payload = {
             targets,
@@ -63,7 +63,12 @@ export const getForecast = async (targets, models, horizon, timePeriod = 'day', 
             throw new Error(errorMessage);
         }
 
-        // Handle all formats as downloads
+        // For data display, return the JSON response directly
+        if (!forDownload && outputFormat === 'json') {
+            return await response.json();
+        }
+
+        // Handle downloads for all formats
         const blob = await (outputFormat === 'json' ? 
             new Blob([JSON.stringify(await response.json(), null, 2)], { type: 'application/json' }) : 
             response.blob());

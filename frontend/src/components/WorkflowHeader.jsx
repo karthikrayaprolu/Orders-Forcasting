@@ -9,18 +9,18 @@ import {
 } from 'lucide-react';
 import { useWorkflow } from '@/contexts/WorkflowContext';
 
-const steps = [
-    { id: 'database', icon: Database, label: 'Upload Data' },
-    { id: 'process', icon: GitBranch, label: 'Process' },
-    { id: 'train', icon: Brain, label: 'Train Models' },
-    { id: 'results', icon: BarChart4, label: 'Results' }
-];
-
 const WorkflowHeader = () => {
-    const { currentStep, setCurrentStep, completedSteps, canAccessStep } = useWorkflow();
+    const { currentStep, setCurrentStep, completedSteps, canAccessStep, STEPS } = useWorkflow();
+
+    const steps = [
+        { id: STEPS.DATABASE, icon: Database, label: 'Upload Data' },
+        { id: STEPS.PROCESS, icon: GitBranch, label: 'Process' },
+        { id: STEPS.TRAIN, icon: Brain, label: 'Train Models' },
+        { id: STEPS.RESULTS, icon: BarChart4, label: 'Results' }
+    ];
 
     const getStepStatus = (stepId) => {
-        if (completedSteps.has(stepId)) {
+        if (Array.from(completedSteps).includes(stepId)) {
             return 'completed';
         }
         if (currentStep === stepId) {
@@ -62,7 +62,8 @@ const WorkflowHeader = () => {
                                     ${isDisabled ? 'cursor-not-allowed' : 'cursor-pointer'}
                                     ${status === 'completed' ? 'bg-green-500 text-white' : 
                                       status === 'current' ? 'bg-blue-100 text-blue-500 ring-2 ring-blue-500' : 
-                                      'bg-gray-100 text-gray-400'}`}                                whileHover={isDisabled ? {} : { scale: 1.1 }}
+                                      'bg-gray-100 text-gray-400'}`}
+                                whileHover={isDisabled ? {} : { scale: 1.1 }}
                                 whileTap={isDisabled ? {} : { scale: 0.95 }}
                                 onClick={() => handleStepClick(step.id)}
                             >

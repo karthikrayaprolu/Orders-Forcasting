@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { useWorkflow } from '@/contexts/WorkflowContext';
-import { Button } from '@/components/ui/button';
+import { Button } from '../components/ui/button';
+import { toast } from 'sonner';
 import { Brain, Shuffle, GitMerge, RefreshCw, Target, Check } from 'lucide-react';
 import { getForecast } from '@/services/api';
 
@@ -13,7 +14,7 @@ const TrainStep = () => {
     const [modelSelections, setModelSelections] = useState({});
 
     const availableTargets = [
-        { id: 'orders', name: 'Orders', description: 'Number of orders per day' },
+        { id: 'orders', name: 'Orders', description: 'Number of orders' },
         { id: 'products', name: 'Products', description: 'Total products ordered' },
         { id: 'employees', name: 'Employees', description: 'Required workforce' },
         { id: 'throughput', name: 'Throughput', description: 'Daily processing capacity' }
@@ -51,48 +52,32 @@ const TrainStep = () => {
         setLoading(true);
         setError('');
         try {
-            if (selectedTargets.length === 0) {
-                throw new Error('Please select at least one target to forecast');
-            }
-
-            if (selectedTargets.some(target => !modelSelections[target])) {
-                throw new Error('Please select models for all chosen targets');
-            }
-
-            // Get process settings from localStorage or use defaults
-            const timePeriod = localStorage.getItem('timePeriod') || 'day';
-            const aggregationMethod = localStorage.getItem('aggregationMethod') || 'mean';
-            const horizon = process?.horizon || parseInt(localStorage.getItem('forecastHorizon')) || 30;
-
-            // Save configurations to localStorage
+            // Store selections in localStorage for persistence
             localStorage.setItem('modelSelections', JSON.stringify(modelSelections));
-            localStorage.setItem('forecastHorizon', horizon.toString());
             localStorage.setItem('selectedTargets', JSON.stringify(selectedTargets));
-            localStorage.setItem('timePeriod', timePeriod);
-            localStorage.setItem('aggregationMethod', aggregationMethod);
+            localStorage.setItem('forecastHorizon', '30'); // Default horizon
+            localStorage.setItem('timePeriod', 'day');
+            localStorage.setItem('aggregationMethod', 'mean');
 
-            // Make the forecast API call with JSON format
-            const forecastResults = await getForecast(
+            // Make the forecast request
+            const forecastData = await getForecast(
                 selectedTargets,
                 modelSelections,
-                horizon,
-                timePeriod,
-                aggregationMethod,
+                30, // Default horizon
+                'day',
+                'mean',
                 'json'
             );
 
-            if (!forecastResults || forecastResults.error) {
-                throw new Error(forecastResults?.error || 'Failed to generate forecast');
-            }
+            // Store the results
+            setResults(forecastData);
+            localStorage.setItem('forecastResults', JSON.stringify(forecastData));
 
-            // Save results to context
-            setResults(forecastResults);
-            
             // Move to next step
             completeStep(STEPS.TRAIN);
         } catch (error) {
             console.error('Training error:', error);
-            setError(error.message || 'Failed to generate forecast');
+            setError(error.message || 'Failed to train models');
         } finally {
             setLoading(false);
         }

@@ -3,13 +3,15 @@ import React, { createContext, useContext, useState, useEffect } from "react";
 // Create the context
 const WorkflowContext = createContext({});
 
-export const WorkflowProvider = ({ children }) => {
-  const STEPS = {
-    DATABASE: "database",
-    PROCESS: "process",
-    TRAIN: "train",
-    RESULTS: "results",
+export const WorkflowProvider = ({ children }) => {  const STEPS = {
+    DATABASE: 0,
+    PROCESS: 1,
+    TRAIN: 2,
+    RESULTS: 3
   };
+
+  // Track step order for navigation
+  const STEP_ORDER = [0, 1, 2, 3];
 
   // Core workflow states
   const [currentStep, setCurrentStep] = useState(STEPS.DATABASE);
@@ -56,23 +58,18 @@ export const WorkflowProvider = ({ children }) => {
     if (savedResults) {
       setResults(JSON.parse(savedResults));
     }
-  }, []);
-
-  const completeStep = (step) => {
-    setCompletedSteps((prev) => new Set([...prev, step]));
-    // Move to next step
-    switch (step) {
-      case STEPS.DATABASE:
-        setCurrentStep(STEPS.PROCESS);
-        break;
-      case STEPS.PROCESS:
-        setCurrentStep(STEPS.TRAIN);
-        break;
-      case STEPS.TRAIN:
-        setCurrentStep(STEPS.RESULTS);
-        break;
-      default:
-        break;
+  }, []);  const completeStep = (step) => {
+    setCompletedSteps((prev) => {
+      const newSet = new Set(prev);
+      newSet.add(step);
+      return newSet;
+    });
+    
+    const currentIndex = STEP_ORDER.indexOf(step);
+    const nextStep = STEP_ORDER[currentIndex + 1];
+    
+    if (nextStep !== undefined) {
+      setCurrentStep(nextStep);
     }
   };
 
@@ -94,10 +91,21 @@ export const WorkflowProvider = ({ children }) => {
   };
 
   const canAccessStep = (step) => {
-    const stepOrder = Object.values(STEPS);
-    const currentStepIndex = stepOrder.indexOf(currentStep);
-    const targetStepIndex = stepOrder.indexOf(step);
-    return targetStepIndex <= currentStepIndex || completedSteps.has(step);
+    // Allow access if step is completed or is the next step
+    return completedSteps.has(step) || step === currentStep;
+  };
+
+  const goToStep = (step) => {
+    if (canAccessStep(step)) {
+      setCurrentStep(step);
+      return true;
+    }
+    return false;
+  };
+
+  // Add a function to check if a step is completed
+  const isStepCompleted = (step) => {
+    return completedSteps.has(step);
   };
 
   const value = {

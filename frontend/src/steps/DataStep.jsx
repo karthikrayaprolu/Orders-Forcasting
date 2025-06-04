@@ -2,8 +2,9 @@ import React, { useState } from 'react';
 import { uploadFiles } from '../services/api';
 import { motion } from 'framer-motion';
 import { FiUpload, FiFile, FiCheckCircle } from 'react-icons/fi';
-import { Button } from '@/components/ui/button';
-import { useWorkflow } from '@/contexts/WorkflowContext';
+import { Button } from '../components/ui/button';
+import { useWorkflow } from '../contexts/WorkflowContext';
+import { toast } from 'sonner';
 
 const DataStep = ({ onComplete }) => {
     const [files, setFiles] = useState({
@@ -34,16 +35,16 @@ const DataStep = ({ onComplete }) => {
         try {
             if (!files.header || !files.items || !files.workstation) {
                 throw new Error('Please select all required files');
-            }
-
-            await uploadFiles(files.header, files.items, files.workstation);
+            }            await uploadFiles(files.header, files.items, files.workstation);
             setSuccess(true);
+            toast.success('Data files uploaded successfully!');
             // Complete this step and move to next
             setTimeout(() => {
                 completeStep(STEPS.DATABASE);
+                toast.success('Moving to model training configuration...');
             }, 1500);
         } catch (err) {
-            setError(err.message || 'Failed to upload files. Please try again.');
+            setError(err.message || 'Failed to upload Data. Please try again.');
         } finally {
             setLoading(false);
         }
@@ -62,7 +63,7 @@ const DataStep = ({ onComplete }) => {
                 </div>
                 <div>
                     <h2 className="text-2xl font-bold text-gray-800">Data Upload</h2>
-                    <p className="text-gray-500">Upload your CSV files to begin processing</p>
+                    <p className="text-gray-500">Upload your CSV Data to begin processing</p>
                 </div>
             </div>
             
@@ -86,10 +87,10 @@ const DataStep = ({ onComplete }) => {
                                     )}
                                 </div>
                                 <span className="block text-sm font-medium text-gray-700 capitalize mb-1">
-                                    {fileType} File
+                                    {fileType} Data
                                 </span>
                                 <span className="block text-xs text-gray-500 mb-3">
-                                    {files[fileType]?.name || 'No file selected'}
+                                    {files[fileType]?.name || 'No Data selected'}
                                 </span>
                                 <div className="relative">
                                     <input
@@ -103,7 +104,7 @@ const DataStep = ({ onComplete }) => {
                                         type="button"
                                         className="text-sm"
                                     >
-                                        {files[fileType] ? 'Change File' : 'Select File'}
+                                        {files[fileType] ? 'Change Data' : 'Select Data'}
                                     </Button>
                                 </div>
                             </label>
@@ -127,7 +128,7 @@ const DataStep = ({ onComplete }) => {
                         animate={{ opacity: 1, y: 0 }}
                         className="p-3 bg-emerald-100 text-emerald-700 rounded-lg text-sm"
                     >
-                        Files uploaded successfully! Processing...
+                        Data uploaded successfully! Processing...
                     </motion.div>
                 )}
 
@@ -146,7 +147,7 @@ const DataStep = ({ onComplete }) => {
                                 Uploading...
                             </div>
                         ) : (
-                            'Upload & Process Files'
+                            'Upload & Process Data'
                         )}
                     </Button>
                 </div>

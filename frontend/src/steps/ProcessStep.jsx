@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { FiClock, FiAlertCircle, FiX, FiCheck, FiBarChart2 } from 'react-icons/fi';
 import { Button } from '@/components/ui/button';
+import { toast } from 'sonner';
 import { useWorkflow } from '@/contexts/WorkflowContext';
 
 const ProcessStep = () => {
@@ -23,9 +24,7 @@ const ProcessStep = () => {
         { id: 'sum', label: 'Sum', description: 'Total sum over the period' },
         { id: 'min', label: 'Minimum', description: 'Lowest value in the period' },
         { id: 'max', label: 'Maximum', description: 'Highest value in the period' }
-    ];
-
-    const handleSubmit = async (e) => {
+    ];    const handleSubmit = async (e) => {
         e.preventDefault();
         setLoading(true);
         try {
@@ -36,9 +35,12 @@ const ProcessStep = () => {
                 aggregationMethod
             }));
             await new Promise(resolve => setTimeout(resolve, 800)); // Simulating processing
+            toast.success('Process configuration completed!');
             completeStep(STEPS.PROCESS);
+            toast.success('Moving to results visualization...');
         } catch (err) {
             setError('Failed to process data. Please try again.');
+            toast.error('Failed to process data. Please try again.');
         } finally {
             setLoading(false);
         }

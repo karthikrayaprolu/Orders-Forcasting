@@ -1,4 +1,4 @@
-const API_BASE_URL = 'http://127.0.0.1:8080';
+const API_BASE_URL = 'http://localhost:8080';
 
 export const uploadFiles = async (headerFile, itemsFile, workstationFile) => {
     const formData = new FormData();
@@ -30,23 +30,55 @@ export const uploadFiles = async (headerFile, itemsFile, workstationFile) => {
 
 export const getForecast = async (targets, models, horizon, timePeriod = 'day', aggregationMethod = 'mean', outputFormat = 'json', forDownload = false) => {
     try {
-        const payload = {
-            targets,
-            models,
-            horizon,
+        // Validate and sanitize inputs
+        const sanitizedHorizon = parseInt(horizon);
+        if (isNaN(sanitizedHorizon) || sanitizedHorizon <= 0) {
+            throw new Error('Invalid horizon value');
+        }
+
+        const validTimePeriods = ['day', 'week', 'month'];
+        if (!validTimePeriods.includes(timePeriod)) {
+            throw new Error('Invalid time period');
+        }
+
+        const validAggMethods = ['mean', 'sum', 'min', 'max'];
+        if (!validAggMethods.includes(aggregationMethod)) {
+            throw new Error('Invalid aggregation method');
+        }
+
+        console.log('Starting forecast request with:', { targets, models, horizon: sanitizedHorizon, timePeriod, aggregationMethod });
+
+        const targetList = Array.isArray(targets) ? targets : [targets];
+        let formattedModels = {};
+
+        if (typeof models === 'object' && models !== null) {
+            // Handle both string model types and model info objects
+            targetList.forEach(target => {
+                const model = models[target];
+                if (model) {
+                    formattedModels[target] = typeof model === 'string' ? model : (model.id || model.name);
+                } else {
+                    formattedModels[target] = 'Prophet';
+                }
+            });
+        }        const payload = {
+            targets: targetList,
+            models: formattedModels,
+            horizon: sanitizedHorizon,
             time_period: timePeriod,
             aggregation_method: aggregationMethod,
-            output_format: outputFormat
+            output_format: outputFormat.toLowerCase(),
+            forDownload: forDownload
         };
 
         console.log('Sending forecast request:', payload);
-
+        
         const response = await fetch(`${API_BASE_URL}/forecast`, {
             method: 'POST',
             credentials: 'include',
             headers: {
                 'Content-Type': 'application/json',
-                'Accept': '*/*'
+                'Accept': forDownload ? '*/*' : 'application/json'
             },
             body: JSON.stringify(payload),
         });
@@ -56,32 +88,52 @@ export const getForecast = async (targets, models, horizon, timePeriod = 'day', 
             let errorMessage;
             try {
                 const errorData = JSON.parse(errorText);
-                errorMessage = errorData.error || errorData.detail || 'Unknown error';
+                errorMessage = errorData.detail && Array.isArray(errorData.detail)
+                    ? errorData.detail.map(err => `${err.loc.join('.')}: ${err.msg}`).join(', ')
+                    : (errorData.error || errorData.detail || 'Unknown error');
             } catch {
                 errorMessage = errorText || `HTTP error! status: ${response.status}`;
             }
             throw new Error(errorMessage);
         }
 
-        // For data display, return the JSON response directly
-        if (!forDownload && outputFormat === 'json') {
+        // For data display without download, parse JSON
+        if (!forDownload) {
             return await response.json();
         }
 
-        // Handle downloads for all formats
-        const blob = await (outputFormat === 'json' ? 
-            new Blob([JSON.stringify(await response.json(), null, 2)], { type: 'application/json' }) : 
-            response.blob());
+        // For downloads, handle each format appropriately
+        let blob;
+        if (outputFormat === 'json') {
+            // For JSON, use the response directly as it's already filtered
+            const data = await response.json();
+            blob = new Blob([JSON.stringify(data, null, 2)], { 
+                type: 'application/json' 
+            });
+        } else if (outputFormat === 'excel') {
+            // For Excel, use the raw response
+            const buffer = await response.arrayBuffer();
+            blob = new Blob([buffer], { 
+                type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            });
+        } else {
+            // For CSV, use the raw response
+            const text = await response.text();
+            blob = new Blob([text], { 
+                type: 'text/csv'
+            });
+        }
 
+        // Get filename from Content-Disposition header or generate one
         const disposition = response.headers.get('Content-Disposition');
         let filename;
-        
         if (disposition && disposition.includes('filename=')) {
             filename = disposition.split('filename=')[1].replace(/["']/g, '');
         } else {
             const extension = outputFormat === 'excel' ? 'xlsx' : outputFormat;
             const timestamp = new Date().toISOString().slice(0,19).replace(/[:]/g, '-');
-            filename = `forecast_${timePeriod}_${aggregationMethod}_${timestamp}.${extension}`;
+            const targetNames = targetList.join('_');
+            filename = `forecast_${targetNames}_${timePeriod}_${aggregationMethod}_${timestamp}.${extension}`;
         }
 
         // Create download link and trigger download
@@ -90,8 +142,6 @@ export const getForecast = async (targets, models, horizon, timePeriod = 'day', 
         link.style.display = 'none';
         link.href = url;
         link.download = filename;
-        
-        // Add to document, click, and cleanup
         document.body.appendChild(link);
         link.click();
         

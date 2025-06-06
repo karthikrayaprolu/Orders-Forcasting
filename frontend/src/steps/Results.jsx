@@ -1,21 +1,49 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { useWorkflow } from '@/contexts/WorkflowContext';
 import { Button } from '@/components/ui/button';
-import { FiDownload } from 'react-icons/fi';
+import { FiDownload, FiBarChart } from 'react-icons/fi';
 import { getForecast } from '@/services/api';
 import { toast } from 'sonner';
-import Plot from 'react-plotly.js';
 import ErrorBoundary from '@/components/ErrorBoundary';
+import Plot from 'react-plotly.js';
+import * as d3 from 'd3';
 
-const Results = () => {
+const modelTypes = [
+    { id: 'Prophet', name: 'Prophet', description: 'Best for time series with strong seasonal effects' },
+    { id: 'ARIMA', name: 'ARIMA', description: 'Traditional statistical forecasting' },
+    { id: 'LSTM', name: 'LSTM', description: 'Deep learning for complex patterns' },
+    { id: 'RandomForest', name: 'Random Forest', description: 'Ensemble method for robust predictions' }
+];
+
+const Results = () => {    
     const { results, setResults } = useWorkflow();
     const [selectedFormat, setSelectedFormat] = useState('json');
     const [downloading, setDownloading] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
-    const [targetGraphs, setTargetGraphs] = useState([]);
+    const [selectedTarget, setSelectedTarget] = useState(null);
+    const [accuracyMetrics, setAccuracyMetrics] = useState(null);
+    const [configuration, setConfiguration] = useState({
+        process: {
+            horizon: 30,
+            timePeriod: 'day',
+            aggregationMethod: 'mean'
+        },
+        training: {
+            selectedTargets: [],
+            modelSelections: {}
+        }
+    });
+    const chartsRef = useRef({});
+    const availableTargets = [
+        { id: 'transformOrdNo', name: 'Orders', description: 'Number of unique orders' },
+        { id: 'quantity', name: 'Products', description: 'Total products ordered' },
+        { id: 'workers_needed', name: 'Employees', description: 'Required workforce' },
+        { id: 'woNumber', name: 'Work Orders', description: 'Number of unique work orders' }
+    ];
 
+    // Effect to load initial data
     useEffect(() => {
         // Load saved configurations and results
         const storedSelections = localStorage.getItem('modelSelections');
@@ -58,176 +86,244 @@ const Results = () => {
                 })
                 .finally(() => setLoading(false));
         }
-    }, []);
+    }, []); // Only run once on mount
+
+    // Effect to set initial selected target
+    useEffect(() => {
+        if (results && results.length > 0 && !selectedTarget) {
+            // Find first available target from the selected targets
+            const firstTarget = availableTargets.find(target => 
+                configuration.training.selectedTargets.includes(target.id) &&
+                results.some(r => r[target.id] !== undefined)
+            );
+            if (firstTarget) {
+                setSelectedTarget(firstTarget);
+            }
+        }
+    }, [results, configuration.training.selectedTargets]);    // Load configuration on mount
+    useEffect(() => {
+        const loadConfiguration = () => {
+            try {
+                // Try to load complete configuration first
+                const completeConfig = localStorage.getItem('completeConfiguration');
+                if (completeConfig) {
+                    const parsed = JSON.parse(completeConfig);
+                    setConfiguration(parsed);
+                    return;
+                }
+
+                // Fallback to loading individual items
+                const horizon = parseInt(localStorage.getItem('forecastHorizon'));
+                const timePeriod = localStorage.getItem('timePeriod');
+                const aggregationMethod = localStorage.getItem('aggregationMethod');
+                const storedTargets = localStorage.getItem('selectedTargets');
+                const storedModels = localStorage.getItem('modelSelections');
+
+                if (!horizon || !timePeriod || !aggregationMethod) {
+                    console.error('Missing process configuration');
+                    return;
+                }
+
+                if (!storedTargets || !storedModels) {
+                    console.error('Missing training configuration');
+                    return;
+                }
+
+                const parsedTargets = JSON.parse(storedTargets);
+                const parsedModels = JSON.parse(storedModels);
+
+                setConfiguration({
+                    process: {
+                        horizon,
+                        timePeriod,
+                        aggregationMethod
+                    },
+                    training: {
+                        selectedTargets: parsedTargets,
+                        modelSelections: parsedModels
+                    }
+                });
+
+                console.log('Loaded configuration:', {
+                    horizon,
+                    timePeriod,
+                    aggregationMethod,
+                    targets: parsedTargets,
+                    models: parsedModels
+                });
+            } catch (error) {
+                console.error('Error loading configuration:', error);
+            }
+        };
+        
+        loadConfiguration();
+    }, []);    const createPlotlyChart = (target, data) => {
+        if (!data || data.length === 0) {
+            return { data: [], layout: {} };
+        }
+
+        console.log('Raw data before filtering:', data);
+        const historicalData = data.filter(d => d.type === 'historical') || [];
+        const forecastData = data.filter(d => d.type === 'forecast') || [];
+        console.log('Filtered historical data:', historicalData);
+        console.log('Filtered forecast data:', forecastData);
+
+        let traces = [];
+
+        // Add historical data trace
+        if (historicalData.length > 0) {
+            traces.push({
+                name: 'Historical',
+                x: historicalData.map(d => new Date(d.date)),
+                y: historicalData.map(d => d[target.id]),
+                type: 'scatter',
+                mode: 'lines',
+                line: { color: '#2563eb', width: 2 },
+                hovertemplate: '%{y:,.0f}<extra>Historical</extra>'
+            });
+        }
+
+        // Add forecast data and confidence intervals
+        if (forecastData.length > 0) {
+            // Add confidence intervals first (to appear behind the forecast line)
+            traces.push({
+                name: 'Confidence Interval',
+                x: [...forecastData.map(d => new Date(d.date)), ...forecastData.map(d => new Date(d.date)).reverse()],
+                y: [...forecastData.map(d => d[target.id] * 1.1), ...forecastData.map(d => d[target.id] * 0.9).reverse()],
+                fill: 'toself',
+                fillcolor: 'rgba(5, 150, 105, 0.1)',
+                line: { color: 'transparent' },
+                showlegend: false,
+                hoverinfo: 'skip'
+            });
+
+            // Add forecast line
+            traces.push({
+                name: 'Forecast',
+                x: forecastData.map(d => new Date(d.date)),
+                y: forecastData.map(d => d[target.id]),
+                type: 'scatter',
+                mode: 'lines',
+                line: { 
+                    color: '#059669',
+                    width: 2,
+                    dash: 'dash'
+                },
+                hovertemplate: '%{y:,.0f}<extra>Forecast</extra>'
+            });
+        }        // Create layout with proper formatting
+        const layout = {
+            autosize: true,
+            height: 400,
+            title: `${target.name} Forecast`,
+            xaxis: { 
+                title: 'Date',
+                type: 'date',
+                tickformat: '%Y-%m-%d',
+                showgrid: true,
+                gridcolor: 'rgba(0,0,0,0.1)'
+            },
+            yaxis: { 
+                title: target.name,
+                showgrid: true,
+                gridcolor: 'rgba(0,0,0,0.1)',
+                zeroline: true,
+                zerolinecolor: 'rgba(0,0,0,0.2)'
+            },
+            hovermode: 'x unified',
+            showlegend: true,
+            legend: {
+                orientation: 'h',
+                y: -0.2
+            },
+            margin: { t: 40, r: 10, b: 40, l: 60 },
+            plot_bgcolor: 'white'
+        };
+
+        // Add divider line at the last historical date if we have both types of data
+        if (historicalData.length > 0 && forecastData.length > 0) {
+            const lastHistoricalDate = new Date(historicalData[historicalData.length - 1].date);
+            layout.shapes = [{
+                type: 'line',
+                x0: lastHistoricalDate,
+                x1: lastHistoricalDate,
+                y0: 0,
+                y1: 1,
+                yref: 'paper',
+                line: {
+                    color: '#ef4444',
+                    width: 1,
+                    dash: 'dot'
+                }
+            }];
+        }
+
+        return { data: traces, layout };
+    };
 
     useEffect(() => {
         if (results && results.length > 0) {
-            const targets = Object.keys(results[0]).filter(key => key !== 'date');
-            
-            // Get the earliest and latest dates from the data
-            const dates = results.map(r => new Date(r.date));
-            const minDate = new Date(Math.min(...dates));
-            const maxDate = new Date(Math.max(...dates));
-
-            // The split date should be where historical data ends and forecast begins
-            // This is typically the last date before the forecast horizon starts
-            // We'll find it by looking at the date pattern in the data
-            let splitDate = null;
-            const timeDiffs = [];
-            for (let i = 1; i < dates.length; i++) {
-                timeDiffs.push(dates[i].getTime() - dates[i-1].getTime());
-            }
-            
-            // Find where the time difference pattern changes - this is likely where forecast starts
-            const medianDiff = timeDiffs.slice(0, Math.floor(timeDiffs.length / 2)).reduce((a, b) => a + b, 0) / Math.floor(timeDiffs.length / 2);
-            let splitIndex = timeDiffs.findIndex(diff => Math.abs(diff - medianDiff) > medianDiff * 0.1);
-            if (splitIndex === -1) {
-                // If no clear split is found, use the middle point
-                splitIndex = Math.floor(dates.length / 2);
-            }
-            splitDate = dates[splitIndex];
-
-            console.log('Date analysis:', {
-                minDate,
-                maxDate,
-                splitDate,
-                totalPoints: dates.length,
-                historicalPoints: splitIndex + 1,
-                forecastPoints: dates.length - splitIndex - 1
-            });
-            
-            // Process data for each target
-            const processedGraphs = targets.map(target => {
-                // Ensure dates are properly parsed
-                const processedResults = results.map(r => ({
-                    ...r,
-                    date: new Date(r.date)
-                }));
-
-                // Split data into historical and forecast periods
-                const historicalData = processedResults.filter((r, i) => i <= splitIndex);
-                const forecastData = processedResults.filter((r, i) => i > splitIndex);
-                
-                // Calculate y-axis range including both historical and forecast data
-                const allValues = results.map(r => r[target]);
-                const minValue = Math.min(...allValues) * 0.9;
-                const maxValue = Math.max(...allValues) * 1.1;
-
-                // Calculate confidence intervals for forecast (±10%)
-                const confidenceUpper = forecastData.map(d => ({
-                    date: d.date,
-                    value: d[target] * 1.1
-                }));
-                const confidenceLower = forecastData.map(d => ({
-                    date: d.date,
-                    value: d[target] * 0.9
-                }));
-
-                return {
-                    target,
-                    traces: [
-                        // Historical data trace
-                        {
-                            type: 'scatter',
-                            mode: 'lines+markers',
-                            name: 'Historical Data',
-                            x: historicalData.map(d => d.date),
-                            y: historicalData.map(d => d[target]),
-                            line: { 
-                                color: '#4f46e5',
-                                width: 2.5
-                            },
-                            marker: {
-                                size: 6,
-                                color: '#4f46e5'
-                            },
-                            hovertemplate: 'Value: %{y:.2f}<br>Date: %{x|%B %d, %Y}<extra>Historical</extra>'
-                        },
-                        // Forecast data trace
-                        {
-                            type: 'scatter',
-                            mode: 'lines',
-                            name: 'Forecast',
-                            x: forecastData.map(d => d.date),
-                            y: forecastData.map(d => d[target]),
-                            line: { 
-                                color: '#f59e0b',
-                                width: 3,
-                                dash: 'dash'
-                            },
-                            hovertemplate: 'Value: %{y:.2f}<br>Date: %{x|%B %d, %Y}<extra>Forecast</extra>'
-                        },
-                        // Confidence interval
-                        {
-                            type: 'scatter',
-                            name: 'Confidence Interval (±10%)',
-                            x: [...forecastData.map(d => d.date), ...forecastData.map(d => d.date).reverse()],
-                            y: [...confidenceUpper.map(d => d.value), ...confidenceLower.map(d => d.value).reverse()],
-                            fill: 'toself',
-                            fillcolor: 'rgba(245, 158, 11, 0.1)',
-                            line: { width: 0 },
-                            showlegend: true,
-                            hoverinfo: 'skip'
-                        }
-                    ],
-                    layout: {
-                        title: {
-                            text: `Forecast for ${target}`,
-                            font: { size: 24, color: '#1f2937' }
-                        },
-                        xaxis: {
-                            title: 'Date',
-                            showgrid: true,
-                            gridcolor: '#f3f4f6',
-                            rangeslider: { visible: true },
-                            rangeselector: {
-                                buttons: [
-                                    {count: 1, label: '1m', step: 'month', stepmode: 'backward'},
-                                    {count: 6, label: '6m', step: 'month', stepmode: 'backward'},
-                                    {count: 1, label: '1y', step: 'year', stepmode: 'backward'},
-                                    {step: 'all', label: 'All'}
-                                ],
-                                bgcolor: '#f9fafb',
-                                activecolor: '#4f46e5'
-                            }
-                        },
-                        yaxis: {
-                            title: 'Value',
-                            showgrid: true,
-                            gridcolor: '#f3f4f6',
-                            range: [minValue, maxValue]
-                        },
-                        shapes: [{
-                            type: 'line',
-                            x0: splitDate,
-                            x1: splitDate,
-                            y0: minValue,
-                            y1: maxValue,
-                            line: {
-                                color: '#ef4444',
-                                width: 1,
-                                dash: 'dash'
-                            }
-                        }],
-                        annotations: [{
-                            x: splitDate,
-                            y: maxValue,
-                            text: 'Historical → Forecast',
-                            showarrow: false,
-                            xanchor: 'left',
-                            yanchor: 'bottom'
-                        }],
-                        plot_bgcolor: 'white',
-                        paper_bgcolor: 'white'
+            // Draw charts for each target after a small delay to allow for DOM updates
+            setTimeout(() => {
+                availableTargets.forEach(target => {
+                    if (results.some(r => r[target.id] !== undefined) && chartsRef.current[target.id]) {
+                        createPlotlyChart(target, results, chartsRef.current[target.id]);
                     }
-                };
-            });
-
-            setTargetGraphs(processedGraphs);
+                });
+            }, 100);
         }
     }, [results]);
 
-    const handleDownload = async () => {
+    // Effect to update accuracy metrics when target changes
+    useEffect(() => {
+        if (results && results.length > 0 && selectedTarget) {
+            const historicalData = results.filter(d => d.type === 'historical');
+            const forecastData = results.filter(d => d.type === 'forecast');
+            const metrics = calculateAccuracyMetrics(historicalData, forecastData, selectedTarget.id);
+            setAccuracyMetrics(metrics);
+        }
+    }, [selectedTarget, results]); // Only run when selected target or results change
+
+    const calculateAccuracyMetrics = (historicalData, forecastData, targetId) => {
+        if (!historicalData || !forecastData || historicalData.length === 0 || forecastData.length === 0) {
+            return null;
+        }
+
+        // Get overlapping period data
+        const lastHistoricalDate = new Date(historicalData[historicalData.length - 1].date);
+        const historicalValues = historicalData.map(d => d[targetId]);
+        const forecastValues = forecastData
+            .filter(d => new Date(d.date) <= lastHistoricalDate)
+            .map(d => d[targetId]);
+
+        if (historicalValues.length === 0 || forecastValues.length === 0) {
+            return null;
+        }
+
+        // Calculate metrics
+        const mse = historicalValues.reduce((sum, actual, i) => {
+            const predicted = forecastValues[i] || 0;
+            return sum + Math.pow(actual - predicted, 2);
+        }, 0) / historicalValues.length;
+
+        const rmse = Math.sqrt(mse);
+        
+        const mae = historicalValues.reduce((sum, actual, i) => {
+            const predicted = forecastValues[i] || 0;
+            return sum + Math.abs(actual - predicted);
+        }, 0) / historicalValues.length;
+
+        const mape = historicalValues.reduce((sum, actual, i) => {
+            const predicted = forecastValues[i] || 0;
+            return sum + (Math.abs((actual - predicted) / actual) * 100);
+        }, 0) / historicalValues.length;
+
+        return {
+            rmse: rmse.toFixed(2),
+            mae: mae.toFixed(2),
+            mape: mape.toFixed(2) + '%'
+        };
+    };    const handleDownload = async () => {
         if (!results || !results.length) {
             toast.error('No forecast data available to download');
             return;
@@ -235,38 +331,31 @@ const Results = () => {
 
         setDownloading(true);
         try {
-            // Get data from localStorage
-            const storedModelSelections = localStorage.getItem('modelSelections');
-            const storedTargets = localStorage.getItem('selectedTargets');
-            
-            if (!storedModelSelections || !storedTargets) {
+            if (!configuration.training.modelSelections || !configuration.training.selectedTargets) {
                 throw new Error('Training configuration not found. Please retrain the models.');
             }
 
-            const modelSelections = JSON.parse(storedModelSelections);
-            const targets = JSON.parse(storedTargets);
-            
-            // Verify each target has a model selection
-            const availableTargets = Object.keys(results[0]).filter(key => key !== 'date');
-            for (const target of availableTargets) {
-                if (!modelSelections[target]) {
-                    modelSelections[target] = localStorage.getItem(`model_${target}`) || 'ARIMA'; // fallback to ARIMA
-                }
+            if (!configuration.process.horizon || !configuration.process.timePeriod || !configuration.process.aggregationMethod) {
+                throw new Error('Process settings not found. Please reconfigure process settings.');
             }
 
-            const horizon = parseInt(localStorage.getItem('forecastHorizon')) || 30;
-            const timePeriod = localStorage.getItem('timePeriod') || 'day';
-            const aggregationMethod = localStorage.getItem('aggregationMethod') || 'mean';
+            // Format models object correctly for the API
+            const modelSelections = {};
+            for (const target of configuration.training.selectedTargets) {
+                const modelInfo = configuration.training.modelSelections[target];
+                // The backend expects just the model type string (e.g. 'Prophet', 'ARIMA', etc.)
+                modelSelections[target] = modelInfo?.id || modelInfo;
+            }
 
             toast.info(`Starting download in ${selectedFormat.toUpperCase()} format...`);
 
             const downloadStartTime = Date.now();
             const success = await getForecast(
-                availableTargets,
+                configuration.training.selectedTargets,
                 modelSelections,
-                horizon,
-                timePeriod,
-                aggregationMethod,
+                configuration.process.horizon,
+                configuration.process.timePeriod,
+                configuration.process.aggregationMethod,
                 selectedFormat,
                 true // forDownload = true
             );
@@ -326,11 +415,12 @@ const Results = () => {
                 className="max-w-7xl mx-auto p-6 space-y-8"
             >
                 <div className="bg-white rounded-xl shadow-lg p-6">
+                    {/* Header and Download Section */}
                     <div className="flex items-center justify-between mb-6">
                         <div>
                             <h2 className="text-2xl font-bold text-gray-800">Forecast Results</h2>
                             <p className="text-sm text-gray-500 mt-1">
-                                Showing historical data and future predictions for each target variable
+                                Select a target variable to view its forecast details
                             </p>
                         </div>
                         <div className="flex items-center space-x-4">
@@ -360,27 +450,111 @@ const Results = () => {
                         </div>
                     </div>
 
+                    {/* Configuration Summary */}
+                    <div className="mb-8 p-4 bg-gray-50 rounded-lg">
+                        <h3 className="text-lg font-semibold text-gray-800 mb-4">Forecast Configuration</h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            {/* Process Settings */}
+                            <div>
+                                <h4 className="font-medium text-gray-700 mb-2">Process Settings</h4>
+                                <div className="space-y-2 text-sm">
+                                    <div className="flex justify-between">
+                                        <span className="text-gray-600">Time Period:</span>
+                                        <span className="font-medium capitalize">{configuration.process.timePeriod}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                        <span className="text-gray-600">Aggregation Method:</span>
+                                        <span className="font-medium capitalize">{configuration.process.aggregationMethod}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                        <span className="text-gray-600">Forecast Horizon:</span>
+                                        <span className="font-medium">{configuration.process.horizon} {configuration.process.timePeriod}s</span>
+                                    </div>
+                                </div>
+                            </div>                            {/* Model Selections */}
+                            <div>
+                                <h4 className="font-medium text-gray-700 mb-2">Selected Models</h4>
+                                <div className="space-y-2 text-sm">                                    {availableTargets
+                                        .filter(target => configuration.training.selectedTargets.includes(target.id))
+                                        .map(target => {
+                                            const modelInfo = configuration.training.modelSelections[target.id];
+                                            return (
+                                                <div key={target.id} className="flex justify-between">
+                                                    <span className="text-gray-600">{target.name}:</span>
+                                                    <span className="font-medium">
+                                                        {modelInfo?.name || 'Not selected'}
+                                                    </span>
+                                                </div>
+                                            );
+                                    })}
+                                </div>
+                            </div>
+                        </div>
+                    </div>{/* Forecast Visualizations */}
                     <div className="space-y-8">
-                        {targetGraphs.map((graph, index) => (
-                            <div key={index} className="bg-gray-50 rounded-lg p-4">
-                                <Plot
-                                    data={graph.traces}
-                                    layout={graph.layout}
-                                    config={{
+                        {availableTargets
+                            .filter(target => 
+                                configuration.training.selectedTargets.includes(target.id) && 
+                                results.some(r => r[target.id] !== undefined)
+                            )
+                            .map((target) => (
+                            <div key={target.id} className="bg-white rounded-xl shadow-md p-6 border border-gray-100">
+                                <h3 className="text-xl font-semibold text-gray-800 mb-4">{target.name} Forecast</h3>
+                                <p className="text-sm text-gray-500 mb-4">{target.description}</p>
+                                
+                                {/* Accuracy Metrics */}
+                                {calculateAccuracyMetrics(
+                                    results.filter(d => d.type === 'historical'),
+                                    results.filter(d => d.type === 'forecast'),
+                                    target.id
+                                ) && (
+                                    <div className="grid grid-cols-3 gap-4 mb-6">
+                                        <div className="bg-gray-50 p-4 rounded-lg">
+                                            <div className="text-sm text-gray-500">RMSE</div>
+                                            <div className="text-xl font-semibold text-gray-800">
+                                                {calculateAccuracyMetrics(
+                                                    results.filter(d => d.type === 'historical'),
+                                                    results.filter(d => d.type === 'forecast'),
+                                                    target.id
+                                                ).rmse}
+                                            </div>
+                                        </div>
+                                        <div className="bg-gray-50 p-4 rounded-lg">
+                                            <div className="text-sm text-gray-500">MAE</div>
+                                            <div className="text-xl font-semibold text-gray-800">
+                                                {calculateAccuracyMetrics(
+                                                    results.filter(d => d.type === 'historical'),
+                                                    results.filter(d => d.type === 'forecast'),
+                                                    target.id
+                                                ).mae}
+                                            </div>
+                                        </div>
+                                        <div className="bg-gray-50 p-4 rounded-lg">
+                                            <div className="text-sm text-gray-500">MAPE</div>
+                                            <div className="text-xl font-semibold text-gray-800">
+                                                {calculateAccuracyMetrics(
+                                                    results.filter(d => d.type === 'historical'),
+                                                    results.filter(d => d.type === 'forecast'),
+                                                    target.id
+                                                ).mape}
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                                
+                                {/* Plotly Chart */}                                <Plot
+                                    data={createPlotlyChart(target, results).data}
+                                    layout={createPlotlyChart(target, results).layout}
+                                    style={{ width: '100%' }}
+                                    config={{ 
                                         responsive: true,
                                         displayModeBar: true,
-                                        displaylogo: false,
-                                        modeBarButtonsToRemove: [
-                                            'lasso2d',
-                                            'select2d',
-                                            'toggleSpikelines'
-                                        ]
+                                        modeBarButtonsToRemove: ['lasso2d', 'select2d']
                                     }}
-                                    className="w-full h-[600px]"
                                 />
                             </div>
                         ))}
-                    </div>
+                    </div>                    {/* Empty to remove the selected target visualization section */}
                 </div>
             </motion.div>
         </ErrorBoundary>

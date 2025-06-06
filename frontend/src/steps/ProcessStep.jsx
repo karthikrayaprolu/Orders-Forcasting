@@ -7,16 +7,28 @@ import { useWorkflow } from '@/contexts/WorkflowContext';
 
 const ProcessStep = () => {
     const { completeStep, STEPS, process, setProcess } = useWorkflow();
-    const [horizon, setHorizon] = useState(30); // Default 30 days
-    const [timePeriod, setTimePeriod] = useState('day'); // 'day', 'week', 'month'
-    const [aggregationMethod, setAggregationMethod] = useState('mean'); // 'mean', 'sum', 'min', 'max'
+    const [horizon, setHorizon] = useState(process?.horizon || 30);
+    const [timePeriod, setTimePeriod] = useState(process?.timePeriod || 'day');
+    const [aggregationMethod, setAggregationMethod] = useState(process?.aggregationMethod || 'mean');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
 
     const timePeriods = [
-        { id: 'day', label: 'Days', description: 'Daily forecasts' },
-        { id: 'week', label: 'Weeks', description: 'Weekly aggregated forecasts' },
-        { id: 'month', label: 'Months', description: 'Monthly aggregated forecasts' }
+        { 
+            id: 'day', 
+            label: 'Days', 
+            description: 'Best for short-term operational planning and detailed patterns. Recommended for 1-90 day forecasts.'
+        },
+        { 
+            id: 'week', 
+            label: 'Weeks', 
+            description: 'Ideal for medium-term planning and reducing daily noise. Best for 1-52 week forecasts.'
+        },
+        { 
+            id: 'month', 
+            label: 'Months', 
+            description: 'Perfect for long-term strategic planning and seasonal patterns. Optimal for 1-24 month forecasts.'
+        }
     ];
 
     const aggregationMethods = [
@@ -24,23 +36,31 @@ const ProcessStep = () => {
         { id: 'sum', label: 'Sum', description: 'Total sum over the period' },
         { id: 'min', label: 'Minimum', description: 'Lowest value in the period' },
         { id: 'max', label: 'Maximum', description: 'Highest value in the period' }
-    ];    const handleSubmit = async (e) => {
+    ];
+
+    const handleSubmit = async (e) => {
         e.preventDefault();
         setLoading(true);
         try {
-            setProcess(prev => ({
-                ...prev,
+            if (horizon <= 0) {
+                throw new Error('Horizon must be a positive number');
+            }
+            
+            setProcess({
                 horizon,
                 timePeriod,
                 aggregationMethod
-            }));
-            await new Promise(resolve => setTimeout(resolve, 800)); // Simulating processing
-            toast.success('Process configuration completed!');
+            });
+
+            localStorage.setItem('forecastHorizon', horizon.toString());
+            localStorage.setItem('timePeriod', timePeriod);
+            localStorage.setItem('aggregationMethod', aggregationMethod);
+
+            toast.success('Process configuration saved');
             completeStep(STEPS.PROCESS);
-            toast.success('Moving to results visualization...');
         } catch (err) {
-            setError('Failed to process data. Please try again.');
-            toast.error('Failed to process data. Please try again.');
+            setError(err.message || 'Failed to save process configuration');
+            toast.error(err.message || 'Failed to save process configuration');
         } finally {
             setLoading(false);
         }
@@ -65,26 +85,43 @@ const ProcessStep = () => {
                         <FiClock className="mr-2 h-5 w-5 text-blue-500" />
                         Time Period
                     </h3>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        {timePeriods.map(period => (
-                            <button
-                                key={period.id}
-                                type="button"
-                                onClick={() => setTimePeriod(period.id)}
-                                className={`p-4 rounded-lg border transition-all ${
-                                    timePeriod === period.id
-                                        ? 'border-blue-500 bg-blue-50 text-blue-700'
-                                        : 'border-gray-200 hover:border-blue-200 hover:bg-gray-50'
-                                }`}
-                            >
-                                <div className="font-semibold">{period.label}</div>
-                                <div className="text-sm text-gray-500">{period.description}</div>
-                            </button>
-                        ))}
+                    <div className="space-y-4">
+                        <div className="flex justify-center mb-4">
+                            <div className="inline-flex rounded-lg border border-gray-200 p-1">
+                                {timePeriods.map(period => (
+                                    <button
+                                        key={period.id}
+                                        type="button"
+                                        onClick={() => {
+                                            if (period.id !== timePeriod) {
+                                                setTimePeriod(period.id);
+                                                const defaults = { day: 30, week: 12, month: 6 };
+                                                setHorizon(defaults[period.id]);
+                                                toast.info(`Forecast horizon set to ${defaults[period.id]} ${period.label.toLowerCase()} by default`);
+                                            }
+                                        }}
+                                        className={`px-6 py-2.5 rounded-md transition-all flex items-center space-x-2 ${
+                                            timePeriod === period.id
+                                                ? 'bg-blue-500 text-white font-medium shadow-sm'
+                                                : 'hover:bg-gray-100 text-gray-700'
+                                        }`}
+                                    >
+                                        <span>{period.label}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        {timePeriod && (
+                            <div className="text-center">
+                                <span className="text-sm text-gray-600">
+                                    {timePeriods.find(p => p.id === timePeriod)?.description}
+                                </span>
+                            </div>
+                        )}
                     </div>
                 </div>
 
-                {/* Aggregation Method Selection (for week/month) */}
+                {/* Aggregation Method Selection */}
                 {timePeriod !== 'day' && (
                     <div className="space-y-4">
                         <h3 className="text-lg font-semibold text-gray-800 flex items-center">
@@ -124,24 +161,64 @@ const ProcessStep = () => {
                             <input
                                 type="range"
                                 min="1"
-                                max={timePeriod === 'day' ? 365 : timePeriod === 'week' ? 52 : 12}
-                                value={horizon}
+                                max="10000"
+                                value={horizon <= 10000 ? horizon : 10000}
                                 onChange={(e) => setHorizon(parseInt(e.target.value))}
                                 className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
                             />
-                            <span className="text-sm font-medium bg-gray-100 px-3 py-1.5 rounded-lg w-24 text-center">
-                                {horizon} {timePeriod}s
-                            </span>
+                            <div className="flex items-center space-x-2">
+                                <input
+                                    type="number"
+                                    min="1"
+                                    value={horizon}
+                                    onChange={(e) => {
+                                        const value = parseInt(e.target.value);
+                                        if (value >= 1) {
+                                            setHorizon(value);
+                                            const modelRecommendations = {
+                                                day: {
+                                                    threshold: 90,
+                                                    message: 'For forecasts beyond 90 days, consider using weekly or monthly periods for better accuracy'
+                                                },
+                                                week: {
+                                                    threshold: 52,
+                                                    message: 'For forecasts beyond 52 weeks, monthly periods often provide more reliable long-term predictions'
+                                                },
+                                                month: {
+                                                    threshold: 24,
+                                                    message: 'For forecasts beyond 24 months, our models will adapt to provide the best possible long-term predictions'
+                                                }
+                                            };
+
+                                            const recommendation = modelRecommendations[timePeriod];
+                                            if (recommendation && value > recommendation.threshold) {
+                                                toast.info(recommendation.message, {
+                                                    duration: 5000,
+                                                });
+                                            }
+                                        }
+                                    }}
+                                    className="w-24 text-center rounded-lg border border-gray-200 py-1.5 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                />
+                                <span className="text-sm font-medium text-gray-600">{timePeriod}s</span>
+                            </div>
                         </div>
                         <div className="flex justify-between text-xs text-gray-500 px-1">
-                            <span>1 {timePeriod}</span>
-                            <span>{timePeriod === 'day' ? '6 months' : timePeriod === 'week' ? '26 weeks' : '6 months'}</span>
-                            <span>{timePeriod === 'day' ? '1 year' : timePeriod === 'week' ? '1 year' : '1 year'}</span>
+                            <span>Min: 1 {timePeriod}</span>
+                            <span>Set any value using direct input</span>
+                            <span>Current: {horizon} {timePeriod}s</span>
                         </div>
                     </div>
-                    <p className="text-sm text-gray-600">
-                        Select how far into the future you want to predict. Longer horizons may have increased uncertainty.
-                    </p>
+                    <div className="space-y-2">
+                        <p className="text-sm text-gray-600">
+                            Select how far into the future you want to predict. The slider supports up to 10,000 {timePeriod}s, but you can enter any positive number in the input field.
+                        </p>
+                        <div className="p-3 bg-blue-50 border border-blue-100 rounded-lg">
+                            <p className="text-sm text-blue-700">
+                                <strong>Guidance:</strong> {timePeriods.find(p => p.id === timePeriod)?.description} Adjust based on your needs - our models will adapt to provide the best possible predictions.
+                            </p>
+                        </div>
+                    </div>
                 </div>
 
                 {error && (

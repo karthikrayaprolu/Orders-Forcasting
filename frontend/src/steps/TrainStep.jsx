@@ -11,23 +11,45 @@ const TrainStep = () => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [selectedTargets, setSelectedTargets] = useState([]);
-    const [modelSelections, setModelSelections] = useState({});
-
-    const availableTargets = [
-        { id: 'orders', name: 'Orders', description: 'Number of orders' },
-        { id: 'products', name: 'Products', description: 'Total products ordered' },
-        { id: 'employees', name: 'Employees', description: 'Required workforce' },
-        { id: 'throughput', name: 'Throughput', description: 'Daily processing capacity' }
-    ];
+    const [modelSelections, setModelSelections] = useState({});    const availableTargets = [
+        { id: 'transformOrdNo', name: 'Orders', description: 'Number of unique orders' },
+        { id: 'quantity', name: 'Products', description: 'Total products ordered' },
+        { id: 'workers_needed', name: 'Employees', description: 'Required workforce' },
+        { id: 'woNumber', name: 'Work Orders', description: 'Number of unique work orders' }
+    ];    // Model recommendations based on target type
+    const targetModelRecommendations = {
+        transformOrdNo: ['Prophet', 'ARIMA'], // Best for order counts
+        quantity: ['RandomForest', 'LSTM'],   // Best for continuous quantities
+        workers_needed: ['Prophet', 'RandomForest'], // Best for workforce planning
+        woNumber: ['ARIMA', 'LSTM']          // Best for work order patterns
+    };
 
     const modelTypes = [
-        { id: 'Prophet', name: 'Prophet', description: 'Best for time series with strong seasonal effects' },
-        { id: 'ARIMA', name: 'ARIMA', description: 'Traditional statistical forecasting' },
-        { id: 'LSTM', name: 'LSTM', description: 'Deep learning for complex patterns' },
-        { id: 'RandomForest', name: 'Random Forest', description: 'Ensemble method for robust predictions' }
-    ];
-
-    const handleTargetChange = (targetId) => {
+        { 
+            id: 'Prophet', 
+            name: 'Prophet', 
+            description: 'Best for seasonal patterns and trending data',
+            strengths: 'Handles holidays, missing data, and trend changes'
+        },
+        { 
+            id: 'ARIMA', 
+            name: 'ARIMA', 
+            description: 'Excellent for stable, consistent patterns',
+            strengths: 'Good for short-term forecasts with clear trends'
+        },
+        { 
+            id: 'LSTM', 
+            name: 'LSTM', 
+            description: 'Advanced deep learning for complex patterns',
+            strengths: 'Best for long sequences and intricate relationships'
+        },
+        { 
+            id: 'RandomForest', 
+            name: 'Random Forest', 
+            description: 'Robust ensemble learning method',
+            strengths: 'Handles non-linear relationships and outliers well'
+        }
+    ];    const handleTargetChange = (targetId) => {
         setSelectedTargets(prev => {
             if (prev.includes(targetId)) {
                 const newTargets = prev.filter(t => t !== targetId);
@@ -36,6 +58,15 @@ const TrainStep = () => {
                 setModelSelections(newModelSelections);
                 return newTargets;
             } else {
+                // Auto-select the first recommended model for this target
+                if (targetModelRecommendations[targetId]?.length > 0) {
+                    const recommendedModel = targetModelRecommendations[targetId][0];
+                    setModelSelections(prev => ({
+                        ...prev,
+                        [targetId]: recommendedModel
+                    }));
+                    toast.success(`Recommended model ${recommendedModel} auto-selected for ${availableTargets.find(t => t.id === targetId).name}`);
+                }
                 return [...prev, targetId];
             }
         });
@@ -46,38 +77,106 @@ const TrainStep = () => {
             ...prev,
             [targetId]: modelId
         }));
+    };    const validateModelSelections = () => {
+        // Check for monthly data with appropriate models
+        if (process.timePeriod === 'month') {
+            for (const targetId of selectedTargets) {
+                const selectedModel = modelSelections[targetId];
+                if (selectedModel === 'LSTM' && process.horizon > 12) {
+                    throw new Error('For monthly data with horizon > 12 months, Prophet or ARIMA is recommended');
+                }
+            }
+        }
+        
+        // Validate minimum data points for LSTM
+        if (process.timePeriod === 'day' && process.horizon > 90) {
+            const lstmTargets = selectedTargets.filter(t => modelSelections[t] === 'LSTM');
+            if (lstmTargets.length > 0) {
+                throw new Error('For long-term daily forecasts (>90 days), Prophet or RandomForest is recommended');
+            }
+        }
     };
 
     const handleSubmit = async () => {
         setLoading(true);
         setError('');
         try {
-            // Store selections in localStorage for persistence
-            localStorage.setItem('modelSelections', JSON.stringify(modelSelections));
-            localStorage.setItem('selectedTargets', JSON.stringify(selectedTargets));
-            localStorage.setItem('forecastHorizon', '30'); // Default horizon
-            localStorage.setItem('timePeriod', 'day');
-            localStorage.setItem('aggregationMethod', 'mean');
+            if (!process || !process.horizon || !process.timePeriod || !process.aggregationMethod) {
+                throw new Error('Process configuration is incomplete. Please go back to the Process step.');
+            }
+            
+            // Validate model selections
+            validateModelSelections();
 
-            // Make the forecast request
+            // Validate model selections
+            for (const targetId of selectedTargets) {
+                if (!modelSelections[targetId]) {
+                    throw new Error(`Please select a model for ${availableTargets.find(t => t.id === targetId).name}`);
+                }
+            }            // Store selections in localStorage with full model information
+            const modelSelectionsWithInfo = {};
+            for (const targetId in modelSelections) {
+                const modelId = modelSelections[targetId];
+                const modelInfo = modelTypes.find(m => m.id === modelId);
+                modelSelectionsWithInfo[targetId] = {
+                    id: modelId,
+                    name: modelInfo?.name || modelId,
+                    description: modelInfo?.description || ''
+                };
+            }
+            
+            // Store all configurations
+            localStorage.setItem('modelSelections', JSON.stringify(modelSelectionsWithInfo));
+            localStorage.setItem('selectedTargets', JSON.stringify(selectedTargets));
+            localStorage.setItem('forecastHorizon', process.horizon.toString());
+            localStorage.setItem('timePeriod', process.timePeriod);
+            localStorage.setItem('aggregationMethod', process.aggregationMethod);
+            
+            // Store the complete configuration state
+            const completeConfig = {
+                process: {
+                    horizon: process.horizon,
+                    timePeriod: process.timePeriod,
+                    aggregationMethod: process.aggregationMethod
+                },
+                training: {
+                    selectedTargets,
+                    modelSelections: modelSelectionsWithInfo
+                }
+            };
+            localStorage.setItem('completeConfiguration', JSON.stringify(completeConfig));
+
+                // Prepare model selections for API request
+            const apiModelSelections = {};
+            for (const targetId in modelSelections) {
+                apiModelSelections[targetId] = modelSelections[targetId];
+            }
+
+            // Make the forecast request with process settings
             const forecastData = await getForecast(
                 selectedTargets,
-                modelSelections,
-                30, // Default horizon
-                'day',
-                'mean',
-                'json'
+                apiModelSelections,
+                process.horizon,
+                process.timePeriod,
+                process.aggregationMethod,
+                'json',
+                false
             );
 
-            // Store the results
-            setResults(forecastData);
-            localStorage.setItem('forecastResults', JSON.stringify(forecastData));
-
-            // Move to next step
-            completeStep(STEPS.TRAIN);
+            if (forecastData && !forecastData.error) {
+                // Store the results
+                setResults(forecastData);
+                localStorage.setItem('forecastResults', JSON.stringify(forecastData));
+                toast.success('Models configured successfully!');
+                // Move to next step
+                completeStep(STEPS.TRAIN);
+            } else {
+                throw new Error(forecastData?.error || 'Failed to get forecast data');
+            }
         } catch (error) {
             console.error('Training error:', error);
             setError(error.message || 'Failed to train models');
+            toast.error(error.message || 'Failed to train models');
         } finally {
             setLoading(false);
         }
@@ -140,26 +239,38 @@ const TrainStep = () => {
                         const target = availableTargets.find(t => t.id === targetId);
                         return (
                             <div key={targetId} className="space-y-3">
-                                <h4 className="font-medium text-gray-700">{target.name}</h4>
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    {modelTypes.map(model => (
-                                        <div
-                                            key={model.id}
-                                            onClick={() => handleModelSelect(targetId, model.id)}
-                                            className={`p-3 rounded-lg border cursor-pointer transition-all
-                                                ${modelSelections[targetId] === model.id
-                                                    ? 'border-green-500 bg-green-50'
-                                                    : 'border-gray-200 hover:border-gray-300'}`}
-                                        >
-                                            <div className="flex items-center justify-between">
-                                                <span className="font-medium">{model.name}</span>
-                                                {modelSelections[targetId] === model.id && (
-                                                    <Check className="w-4 h-4 text-green-500" />
+                                <h4 className="font-medium text-gray-700">{target.name}</h4>                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    {modelTypes.map(model => {
+                                        const isRecommended = targetModelRecommendations[targetId]?.includes(model.id);
+                                        return (
+                                            <div
+                                                key={model.id}
+                                                onClick={() => handleModelSelect(targetId, model.id)}
+                                                className={`p-3 rounded-lg border cursor-pointer transition-all relative
+                                                    ${modelSelections[targetId] === model.id
+                                                        ? 'border-green-500 bg-green-50'
+                                                        : isRecommended 
+                                                          ? 'border-blue-200 hover:border-blue-300'
+                                                          : 'border-gray-200 hover:border-gray-300'}`}
+                                            >
+                                                {isRecommended && (
+                                                    <div className="absolute top-0 right-0 transform translate-x-1/4 -translate-y-1/4">
+                                                        <div className="bg-blue-500 text-white text-xs px-2 py-1 rounded-full">
+                                                            Recommended
+                                                        </div>
+                                                    </div>
                                                 )}
+                                                <div className="flex items-center justify-between">
+                                                    <span className="font-medium">{model.name}</span>
+                                                    {modelSelections[targetId] === model.id && (
+                                                        <Check className="w-4 h-4 text-green-500" />
+                                                    )}
+                                                </div>
+                                                <p className="text-xs text-gray-500 mt-1">{model.description}</p>
+                                                <p className="text-xs text-blue-600 mt-1">{model.strengths}</p>
                                             </div>
-                                            <p className="text-xs text-gray-500 mt-1">{model.description}</p>
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             </div>
                         );

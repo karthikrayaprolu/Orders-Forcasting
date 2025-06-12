@@ -76,11 +76,11 @@ export const WorkflowProvider = ({ children }) => {  const STEPS = {
   const resetWorkflow = () => {
     setCurrentStep(STEPS.DATABASE);
     setCompletedSteps(new Set());
-    setUploadedFiles(null);
+    setUploadedFiles(null);    
     setProcess({
       horizon: 30,
       timePeriod: 'day',
-      aggregationMethod: 'mean',
+      aggregationMethod: 'sum',
       selectedTargets: []
     });
     setModelSelections({});

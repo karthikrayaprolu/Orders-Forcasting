@@ -5,49 +5,60 @@ import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { useWorkflow } from '@/contexts/WorkflowContext';
 
-const ProcessStep = () => {
-    const { completeStep, STEPS, process, setProcess } = useWorkflow();
-    const [horizon, setHorizon] = useState(process?.horizon || 30);
+const ProcessStep = () => {    const { completeStep, STEPS, process, setProcess } = useWorkflow();
+    const [horizon, setHorizon] = useState('');
     const [timePeriod, setTimePeriod] = useState(process?.timePeriod || 'day');
-    const [aggregationMethod, setAggregationMethod] = useState(process?.aggregationMethod || 'mean');
+    const [aggregationMethod, setAggregationMethod] = useState(process?.aggregationMethod || 'sum');
     const [loading, setLoading] = useState(false);
-    const [error, setError] = useState('');
-
-    const timePeriods = [
-        { 
+    const [error, setError] = useState('');    const timePeriods = [        { 
             id: 'day', 
             label: 'Days', 
-            description: 'Best for short-term operational planning and detailed patterns. Recommended for 1-90 day forecasts.'
-        },
-        { 
+            description: 'Daily aggregation, calculated at midnight. For multiple orders in a day, values are combined using the selected method (e.g., summed, averaged).',
+            details: 'Best for short-term, detailed forecasting and daily capacity planning'
+        },        { 
             id: 'week', 
             label: 'Weeks', 
-            description: 'Ideal for medium-term planning and reducing daily noise. Best for 1-52 week forecasts.'
-        },
-        { 
+            description: 'Weekly aggregation, calculated every Saturday. All orders Monday through Saturday are combined using the selected method.',
+            details: 'Good for medium-term trends, weekly planning, and seasonal patterns'
+        },        { 
             id: 'month', 
             label: 'Months', 
-            description: 'Perfect for long-term strategic planning and seasonal patterns. Optimal for 1-24 month forecasts.'
+            description: 'Monthly aggregation, calculated at month end. All orders within the month are combined using the selected method.',
+            details: 'Best for long-term strategic planning and monthly capacity assessment'
         }
-    ];
-
-    const aggregationMethods = [
-        { id: 'mean', label: 'Average', description: 'Mean value over the period' },
-        { id: 'sum', label: 'Sum', description: 'Total sum over the period' },
-        { id: 'min', label: 'Minimum', description: 'Lowest value in the period' },
-        { id: 'max', label: 'Maximum', description: 'Highest value in the period' }
+    ];    const aggregationMethods = [        { 
+            id: 'mean', 
+            label: 'Average', 
+            description: 'Calculate average values for multiple orders in each time period. Use only if you need to analyze typical values rather than totals.',
+            effect: 'Shows average values but may not reflect actual volumes' 
+        },{ 
+            id: 'sum', 
+            label: 'Sum (Recommended)', 
+            description: 'Add up all values within each time period. Default method - best for total volume, orders, and capacity forecasting.',
+            effect: 'Shows actual totals and preserves real quantities in forecasts' 
+        },{ 
+            id: 'min', 
+            label: 'Minimum', 
+            description: 'Use smallest order size in each time period. Good for minimum capacity planning.',
+            effect: 'Shows baseline order levels and minimum required capacity'
+        },        { 
+            id: 'max', 
+            label: 'Maximum', 
+            description: 'Use largest order size in each time period. Essential for peak capacity planning.',
+            effect: 'Shows peak demand levels and maximum capacity needs'
+        }
     ];
 
     const handleSubmit = async (e) => {
         e.preventDefault();
         setLoading(true);
         try {
-            if (horizon <= 0) {
-                throw new Error('Horizon must be a positive number');
+            if (!horizon || horizon <= 0) {
+                throw new Error('Please enter a valid forecast period');
             }
             
             setProcess({
-                horizon,
+                horizon: parseInt(horizon),
                 timePeriod,
                 aggregationMethod
             });
@@ -63,6 +74,32 @@ const ProcessStep = () => {
             toast.error(err.message || 'Failed to save process configuration');
         } finally {
             setLoading(false);
+        }
+    };    const handleHorizonChange = (value) => {
+        const maxValue = timePeriod === 'day' ? 365 : timePeriod === 'week' ? 52 : 12;
+
+        // Handle empty input
+        if (!value && value !== 0) {
+            setHorizon('');
+            return;
+        }
+
+        // Convert to number
+        let numValue = parseInt(value);
+        
+        // Handle invalid number
+        if (isNaN(numValue)) {
+            setHorizon('');
+            return;
+        }
+
+        // Clamp the value between 1 and maxValue
+        numValue = Math.max(1, Math.min(numValue, maxValue));
+        setHorizon(numValue);
+        
+        // Show warning if original input exceeded max
+        if (parseInt(value) > maxValue) {
+            toast.error(`Maximum forecast period is ${maxValue} ${timePeriod}s (1 year)`);
         }
     };
 
@@ -92,12 +129,10 @@ const ProcessStep = () => {
                                     <button
                                         key={period.id}
                                         type="button"
-                                        onClick={() => {
-                                            if (period.id !== timePeriod) {
+                                        onClick={() => {                                            if (period.id !== timePeriod) {
                                                 setTimePeriod(period.id);
-                                                const defaults = { day: 30, week: 12, month: 6 };
-                                                setHorizon(defaults[period.id]);
-                                                toast.info(`Forecast horizon set to ${defaults[period.id]} ${period.label.toLowerCase()} by default`);
+                                                setHorizon('');
+                                                toast.info(`Please enter the forecast period in ${period.label.toLowerCase()}`);
                                             }
                                         }}
                                         className={`px-6 py-2.5 rounded-md transition-all flex items-center space-x-2 ${
@@ -157,66 +192,58 @@ const ProcessStep = () => {
                         Forecast Horizon
                     </h3>
                     <div className="flex flex-col space-y-4">
-                        <div className="flex items-center space-x-4">
-                            <input
+                        <div className="flex items-center space-x-4">                            <input
                                 type="range"
                                 min="1"
-                                max="10000"
-                                value={horizon <= 10000 ? horizon : 10000}
-                                onChange={(e) => setHorizon(parseInt(e.target.value))}
-                                className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                                max={timePeriod === 'day' ? 365 : timePeriod === 'week' ? 52 : 12}
+                                value={horizon || 1}
+                                onChange={(e) => handleHorizonChange(e.target.value)}
+                                className={`flex-1 h-2 rounded-lg appearance-none cursor-pointer accent-blue-600 ${
+                                    horizon ? 'bg-blue-200' : 'bg-gray-200'
+                                }`}
                             />
                             <div className="flex items-center space-x-2">
                                 <input
                                     type="number"
-                                    min="1"
+                                    placeholder="Enter value"
                                     value={horizon}
-                                    onChange={(e) => {
-                                        const value = parseInt(e.target.value);
-                                        if (value >= 1) {
-                                            setHorizon(value);
-                                            const modelRecommendations = {
-                                                day: {
-                                                    threshold: 90,
-                                                    message: 'For forecasts beyond 90 days, consider using weekly or monthly periods for better accuracy'
-                                                },
-                                                week: {
-                                                    threshold: 52,
-                                                    message: 'For forecasts beyond 52 weeks, monthly periods often provide more reliable long-term predictions'
-                                                },
-                                                month: {
-                                                    threshold: 24,
-                                                    message: 'For forecasts beyond 24 months, our models will adapt to provide the best possible long-term predictions'
-                                                }
-                                            };
-
-                                            const recommendation = modelRecommendations[timePeriod];
-                                            if (recommendation && value > recommendation.threshold) {
-                                                toast.info(recommendation.message, {
-                                                    duration: 5000,
-                                                });
-                                            }
-                                        }
-                                    }}
-                                    className="w-24 text-center rounded-lg border border-gray-200 py-1.5 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                    onChange={(e) => handleHorizonChange(e.target.value)}
+                                    className={`w-24 text-center rounded-lg border py-1.5 text-sm focus:ring-1 focus:ring-blue-500 ${
+                                        !horizon ? 'border-gray-200' :
+                                        parseInt(horizon) > (timePeriod === 'day' ? 365 : timePeriod === 'week' ? 52 : 12) 
+                                            ? 'border-red-500 focus:border-red-500' 
+                                            : 'border-green-500 focus:border-green-500'
+                                    }`}
                                 />
                                 <span className="text-sm font-medium text-gray-600">{timePeriod}s</span>
                             </div>
-                        </div>
-                        <div className="flex justify-between text-xs text-gray-500 px-1">
+                        </div>                        <div className="flex justify-between text-xs text-gray-500 px-1">
                             <span>Min: 1 {timePeriod}</span>
-                            <span>Set any value using direct input</span>
-                            <span>Current: {horizon} {timePeriod}s</span>
+                            <span>Max: {timePeriod === 'day' ? 365 : timePeriod === 'week' ? 52 : 12} {timePeriod}s (1 year)</span>
+                            <span>Current: {horizon ? `${horizon} ${timePeriod}s` : 'Not set'}</span>
                         </div>
-                    </div>
-                    <div className="space-y-2">
-                        <p className="text-sm text-gray-600">
-                            Select how far into the future you want to predict. The slider supports up to 10,000 {timePeriod}s, but you can enter any positive number in the input field.
-                        </p>
-                        <div className="p-3 bg-blue-50 border border-blue-100 rounded-lg">
-                            <p className="text-sm text-blue-700">
+                        {horizon !== '' && parseInt(horizon) > (timePeriod === 'day' ? 365 : timePeriod === 'week' ? 52 : 12) && (
+                            <div className="text-red-500 text-xs">
+                                Warning: Value exceeds maximum limit of {timePeriod === 'day' ? 365 : timePeriod === 'week' ? 52 : 12} {timePeriod}s
+                            </div>
+                        )}
+                    </div>                <div className="space-y-4">
+                        <div className="p-4 bg-blue-50 border border-blue-100 rounded-lg">
+                            <p className="text-sm text-blue-700 mb-2">
                                 <strong>Guidance:</strong> {timePeriods.find(p => p.id === timePeriod)?.description} Adjust based on your needs - our models will adapt to provide the best possible predictions.
                             </p>
+                            <div className="mt-3 text-sm text-blue-600">
+                                <strong>Multiple Orders Handling:</strong>
+                                <ul className="list-disc list-inside mt-1 space-y-1">
+                                    <li>Orders within the same {timePeriod} are combined using the selected aggregation method</li>
+                                    <li>Each {timePeriod}'s forecast represents the {aggregationMethod === 'mean' ? 'average' : 
+                                        aggregationMethod === 'sum' ? 'total' : 
+                                        aggregationMethod === 'min' ? 'minimum' : 'maximum'} value expected</li>
+                                    <li>Perfect for {aggregationMethod === 'mean' ? 'typical demand patterns' : 
+                                        aggregationMethod === 'sum' ? 'total volume planning' : 
+                                        aggregationMethod === 'min' ? 'baseline capacity' : 'peak capacity planning'}</li>
+                                </ul>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -269,3 +296,6 @@ const ProcessStep = () => {
 };
 
 export default ProcessStep;
+
+
+

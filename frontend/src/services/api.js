@@ -1,5 +1,17 @@
 const API_BASE_URL = 'http://localhost:8080';
 
+const AVAILABLE_MODELS = {
+    ARIMA: 'ARIMA',
+    Prophet: 'Prophet',
+    LSTM: 'LSTM',
+    RandomForest: 'RandomForest',
+    EMA: 'EMA',
+    HoltWinters: 'HoltWinters'
+};
+
+const VALID_TIME_PERIODS = ['day', 'week', 'month'];
+const VALID_AGG_METHODS = ['mean', 'sum', 'min', 'max'];
+
 export const uploadFiles = async (headerFile, itemsFile, workstationFile) => {
     const formData = new FormData();
     formData.append('header', headerFile);
@@ -36,13 +48,11 @@ export const getForecast = async (targets, models, horizon, timePeriod = 'day', 
             throw new Error('Invalid horizon value');
         }
 
-        const validTimePeriods = ['day', 'week', 'month'];
-        if (!validTimePeriods.includes(timePeriod)) {
+        if (!VALID_TIME_PERIODS.includes(timePeriod)) {
             throw new Error('Invalid time period');
         }
 
-        const validAggMethods = ['mean', 'sum', 'min', 'max'];
-        if (!validAggMethods.includes(aggregationMethod)) {
+        if (!VALID_AGG_METHODS.includes(aggregationMethod)) {
             throw new Error('Invalid aggregation method');
         }
 

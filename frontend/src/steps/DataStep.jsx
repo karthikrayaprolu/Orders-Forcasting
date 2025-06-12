@@ -24,27 +24,47 @@ const DataStep = ({ onComplete }) => {
             [fileType]: file
         }));
         setError('');
-    };
-
-    const handleUpload = async (e) => {
+    };    const handleUpload = async (e) => {
         e.preventDefault();
         setLoading(true);
         setError('');
         setSuccess(false);
 
         try {
+            // Validate file presence
             if (!files.header || !files.items || !files.workstation) {
                 throw new Error('Please select all required files');
-            }            await uploadFiles(files.header, files.items, files.workstation);
-            setSuccess(true);
-            toast.success('Data files uploaded successfully!');
-            // Complete this step and move to next
-            setTimeout(() => {
-                completeStep(STEPS.DATABASE);
-                toast.success('Moving to model training configuration...');
-            }, 1500);
+            }
+
+            // Validate file types
+            const validateFile = (file, expectedName) => {
+                if (!file.name.toLowerCase().endsWith('.csv')) {
+                    throw new Error(`${expectedName} must be a CSV file`);
+                }
+            };
+
+            validateFile(files.header, 'Header file');
+            validateFile(files.items, 'Items file');
+            validateFile(files.workstation, 'Workstation file');
+
+            // Upload files
+            const result = await uploadFiles(files.header, files.items, files.workstation);
+            
+            if (result?.message) {
+                setSuccess(true);
+                toast.success('Data files uploaded successfully!');
+                // Complete this step and move to next
+                setTimeout(() => {
+                    completeStep(STEPS.DATABASE);
+                    toast.success('Moving to process configuration...');
+                }, 1500);
+            } else {
+                throw new Error('Upload response was not in the expected format');
+            }
         } catch (err) {
-            setError(err.message || 'Failed to upload Data. Please try again.');
+            const errorMessage = err.response?.data?.error || err.message || 'Failed to upload files. Please try again.';
+            setError(errorMessage);
+            toast.error(errorMessage);
         } finally {
             setLoading(false);
         }

@@ -17,6 +17,7 @@ from tensorflow.keras.layers import LSTM, Dense
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping
 from sklearn.preprocessing import MinMaxScaler
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -68,81 +69,50 @@ def aggregate_targets(df, time_period='day', agg_method='mean'):
     try:
         # Make a copy to avoid modifying the original
         df = df.copy()
-          # Print initial data info for debugging
-        print(f"Initial data shape: {df.shape}")
-        print("Initial columns:", df.columns.tolist())
-        
-        # Ensure quantity and workers_needed are numeric and non-negative
-        if 'quantity' in df.columns:
-            df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0).clip(lower=0)
-        if 'workers_needed' in df.columns:
-            df['workers_needed'] = pd.to_numeric(df['workers_needed'], errors='coerce').fillna(0).clip(lower=0)
-        
-        # Check if createdAt is in the index
-        if df.index.name == 'createdAt':
-            df['createdAt'] = df.index
-        elif 'createdAt' not in df.columns:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "createdAt column not found"}
-            )
-            
-        # Ensure numeric columns are properly typed
-        numeric_columns = ['quantity', 'workers_needed']
-        for col in numeric_columns:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
         
         # Ensure createdAt is in datetime format
         if not pd.api.types.is_datetime64_any_dtype(df['createdAt']):
             df['createdAt'] = pd.to_datetime(df['createdAt'])
         
-        # Set index for resampling
-        df.set_index('createdAt', inplace=True)
-          # Define resample frequency based on time_period
+        # Get the last valid date from the data
+        last_valid_date = df['createdAt'].max()
+        
+        # Remove any dates beyond the last valid date to prevent future data leakage
+        df = df[df['createdAt'] <= last_valid_date]
+        
+        # Set up aggregation based on time period
         freq_map = {
-            'day': 'D',
-            'week': 'W',
-            'month': 'MS'  # Use month start frequency
+            'day': ('D', 'D'),           # Daily at midnight
+            'week': (f"W-{last_valid_date.strftime('%a').upper()}", 'W'),  # Weekly, anchored to last date
+            'month': ('M', 'M')          # Monthly, at month end
         }
-        freq = freq_map.get(time_period, 'D')
-          # Define aggregation method based on the target type
+        freq, period_type = freq_map.get(time_period, ('D', 'D'))
+        
+        # Set index for aggregation
+        df.set_index('createdAt', inplace=True)
+        
+        # Define aggregation functions
         agg_func = {
-            'transformOrdNo': 'nunique',  # Count unique orders
-            'quantity': 'sum',  # Sum all products
-            'workers_needed': 'sum',  # Total workers needed
-            'woNumber': 'nunique'  # Count unique work orders
+            'transformOrdNo': 'count',  # Always count unique orders
+            'quantity': agg_method,     # Use selected method
+            'workers_needed': agg_method,
+            'woNumber': 'count'         # Always count work orders
         }
-
-        # Modify the aggregation method for mean if specified
-        if agg_method == 'mean':
-            for col in ['quantity', 'workers_needed']:
-                if col in df.columns:
-                    agg_func[col] = 'mean'
-
-        # Resample and aggregate
-        df_resampled = df.resample(freq).agg(agg_func)
         
-        # For monthly aggregation, ensure we're not getting placeholder values
-        if time_period == 'month':
-            # Add an additional check for zero values
-            for col in df_resampled.columns:
-                mask = df_resampled[col] <= 0
-                if mask.any():
-                    # Replace zeros with NaN and forward fill
-                    df_resampled.loc[mask, col] = np.nan
-                    df_resampled[col] = df_resampled[col].fillna(method='ffill')
+        # Perform aggregation
+        result_df = df.resample(freq).agg(agg_func)
         
-        # Handle any NaN values after aggregation
-        df_resampled = handle_nan_values(df_resampled)
+        # Handle missing values
+        result_df = result_df.fillna(method='ffill').fillna(0)
         
-        return df_resampled
-    except Exception as e:        
-        print(f"Error in aggregate_targets: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
-        )
+        # Reset index to get createdAt as column
+        result_df = result_df.reset_index()
+        
+        return result_df
+        
+    except Exception as e:
+        print(f"Aggregation error: {str(e)}")
+        raise e
 
 def forecast_arima(series, steps):
     """ARIMA model with proper training/testing split and parameter optimization"""
@@ -244,12 +214,15 @@ def forecast_prophet(series, steps):
         
         # Cross-validation
         model.fit(df)
-        
-        # Make future dataframe
+          # Make future dataframe
         future = model.make_future_dataframe(periods=steps)
         forecast = model.predict(future)
         
-        return forecast['yhat'].tail(steps).tolist()
+        # Get forecasts and ensure non-negative values
+        forecasted_values = forecast['yhat'].tail(steps)
+        forecasted_values = forecasted_values.clip(lower=0)  # Ensure no negative values
+        
+        return forecasted_values.tolist()
     except Exception as e:
         print(f"Prophet Error: {str(e)}")
         raise e
@@ -398,6 +371,101 @@ def forecast_lstm(series, steps):
         print(f"LSTM Error: {str(e)}")
         print(f"Series shape: {series.shape if hasattr(series, 'shape') else 'no shape'}")
         print(f"Series head: {series.head()}")
+        raise e
+
+def forecast_ema(series, steps):
+    """Enhanced EMA model with proper error handling and validation"""
+    try:
+        # Ensure we have enough data
+        min_samples = 10
+        if len(series) < min_samples:
+            raise ValueError(f"Need at least {min_samples} data points, got {len(series)}")
+        
+        # Convert series to float and handle missing values
+        series = series.astype(float).fillna(method='ffill').fillna(method='bfill')
+        
+        # Calculate optimal span based on data characteristics
+        volatility = series.std() / series.mean()
+        # Adjust span based on volatility (more volatile = smaller span)
+        span = max(5, min(30, int(1/volatility))) if volatility > 0 else 10
+        
+        # Calculate EMA with optimized span
+        ema = series.ewm(span=span, adjust=False).mean()
+        
+        # Generate forecast
+        last_value = ema.iloc[-1]
+        forecast = [last_value] * steps
+        
+        # Add trend adjustment
+        if len(series) >= 2:
+            trend = (ema.iloc[-1] - ema.iloc[-2])
+            forecast = [max(0, last_value + trend * i) for i in range(steps)]
+        
+        return forecast
+        
+    except Exception as e:
+        print(f"EMA Error: {str(e)}")
+        print(f"Series head: {series.head()}")
+        print(f"Series dtype: {series.dtype}")
+        print(f"Series contains null: {series.isnull().any()}")
+        raise e
+
+def forecast_holtwinters(series, steps):
+    """Holt-Winters model with proper error handling and seasonality detection"""
+    try:
+        # Ensure we have enough data
+        min_samples = 14  # Need at least 2 weeks of data
+        if len(series) < min_samples:
+            raise ValueError(f"Need at least {min_samples} data points, got {len(series)}")
+        
+        # Convert series to float and handle missing values
+        series = series.astype(float).fillna(method='ffill').fillna(method='bfill')
+        
+        # Determine seasonal period based on data frequency
+        freq = pd.infer_freq(series.index)
+        seasonal_periods = 7  # Default to weekly seasonality
+        if freq == 'M':
+            seasonal_periods = 12  # Monthly data
+        elif freq == 'Q':
+            seasonal_periods = 4   # Quarterly data
+        elif freq == 'W':
+            seasonal_periods = 52  # Weekly data
+        
+        # Initialize model with automatic optimization
+        model = ExponentialSmoothing(
+            series,
+            seasonal_periods=seasonal_periods,
+            trend='add',
+            seasonal='add',
+            initialization_method='estimated'
+        )
+        
+        # Fit model with optimized parameters
+        try:
+            fit = model.fit(optimized=True)
+        except:
+            # Fallback to simpler model if optimization fails
+            model = ExponentialSmoothing(
+                series,
+                trend='add',
+                seasonal=None,
+                initialization_method='estimated'
+            )
+            fit = model.fit()
+        
+        # Generate forecast
+        forecast = fit.forecast(steps)
+        
+        # Ensure non-negative values
+        forecast = forecast.clip(lower=0)
+        
+        return forecast.tolist()
+        
+    except Exception as e:
+        print(f"Holt-Winters Error: {str(e)}")
+        print(f"Series head: {series.head()}")
+        print(f"Series dtype: {series.dtype}")
+        print(f"Series contains null: {series.isnull().any()}")
         raise e
 
 # Routes
@@ -567,6 +635,10 @@ async def forecast(data: ForecastRequest):
                     forecasted = forecast_lstm(series, data.horizon)
                 elif data.models[target] == 'RandomForest':
                     forecasted = forecast_rf(series, data.horizon)
+                elif data.models[target] == 'EMA':
+                    forecasted = forecast_ema(series, data.horizon)
+                elif data.models[target] == 'HoltWinters':
+                    forecasted = forecast_holtwinters(series, data.horizon)
                 else:
                     return JSONResponse(
                         status_code=400,
@@ -586,34 +658,37 @@ async def forecast(data: ForecastRequest):
                     status_code=500,
                     content={"error": f"Error forecasting {target}: {str(e)}"}
                 )
+          # Format outputs with appropriate date frequency
+        # Get the last historical date
+        last_date = result_df['createdAt'].max()
         
-        # Format outputs with appropriate date frequency
-        freq_map = {'day': 'D', 'week': 'W', 'month': 'M'}
-        
-        # Use current date as the start date for forecasting
-        current_date = pd.Timestamp.now().normalize()  # Get current date without time component
-        last_historical_date = pd.to_datetime(result_df['createdAt']).max()
-        
-        # If current date is before the last historical date, use last historical date
-        start_date = max(current_date, last_historical_date)
-        
-        # Generate forecast dates starting from the next period
+        # For weekly data, ensure we start from the next occurrence of the same weekday
+        if data.time_period == 'week':
+            # Get the next occurrence of the same weekday
+            start_date = last_date + pd.Timedelta(days=7)  # Next week same day
+            freq = f"W-{last_date.strftime('%a').upper()}"  # Anchor to same weekday
+        else:
+            start_date = last_date + pd.Timedelta(days=1)
+            freq = {'day': 'D', 'month': 'M'}[data.time_period]
+
+        # Generate forecast dates
         forecast_dates = pd.date_range(
             start=start_date,
-            periods=data.horizon + 1,
-            freq=freq_map[data.time_period]
-        )[1:]  # Skip first date as it's the last historical date
-        
-        # Prepare results DataFrame with both historical and forecast data
+            periods=data.horizon,
+            freq=freq
+        )
+
+        # Create historical and forecast dataframes
         historical_df = result_df.copy()
         historical_df['type'] = 'historical'
         historical_df = historical_df.rename(columns={'createdAt': 'date'})
-          # Create forecast DataFrame
+
+        # Create forecast DataFrame starting from current date
         forecast_df = pd.DataFrame({'date': forecast_dates})
         for target in results:
             forecast_df[target] = results[target]
         forecast_df['type'] = 'forecast'
-        
+
         # Handle NaN and Inf values
         forecast_df = forecast_df.replace([np.inf, -np.inf], np.nan)
         historical_df = historical_df.replace([np.inf, -np.inf], np.nan)
@@ -660,19 +735,24 @@ async def forecast(data: ForecastRequest):
                 headers={
                     'Content-Disposition': f'attachment; filename=forecast_{"-".join(data.targets)}_{data.time_period}_{data.aggregation_method}.csv'
                 }
-            )
+            )       
         elif data.output_format == 'excel':
+            filename = f'forecast_{"-".join(data.targets)}_{data.time_period}_{data.aggregation_method}.xlsx'
             excel_buffer = BytesIO()
             with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
                 df_export.to_excel(writer, index=False, sheet_name='Forecast')
             excel_buffer.seek(0)
             
+            headers = {
+                'Content-Disposition': f'attachment; filename="{filename}"',
+                'Access-Control-Expose-Headers': 'Content-Disposition',
+                'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            }
+            
             return Response(
                 content=excel_buffer.getvalue(),
                 media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                headers={
-                    'Content-Disposition': f'attachment; filename=forecast_{"-".join(data.targets)}_{data.time_period}_{data.aggregation_method}.xlsx'
-                }
+                headers=headers
             )
         
         else:

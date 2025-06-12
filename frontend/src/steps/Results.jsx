@@ -13,7 +13,9 @@ const modelTypes = [
     { id: 'Prophet', name: 'Prophet', description: 'Best for time series with strong seasonal effects' },
     { id: 'ARIMA', name: 'ARIMA', description: 'Traditional statistical forecasting' },
     { id: 'LSTM', name: 'LSTM', description: 'Deep learning for complex patterns' },
-    { id: 'RandomForest', name: 'Random Forest', description: 'Ensemble method for robust predictions' }
+    { id: 'RandomForest', name: 'Random Forest', description: 'Ensemble method for robust predictions' },
+    { id: 'EMA', name: 'EMA', description: 'Simple and effective trend following' },
+    { id: 'HoltWinters', name: 'Holt-Winters', description: 'Triple exponential smoothing with seasonality' }
 ];
 
 const Results = () => {    
@@ -23,12 +25,11 @@ const Results = () => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [selectedTarget, setSelectedTarget] = useState(null);
-    const [accuracyMetrics, setAccuracyMetrics] = useState(null);
-    const [configuration, setConfiguration] = useState({
+    const [accuracyMetrics, setAccuracyMetrics] = useState(null);    const [configuration, setConfiguration] = useState({
         process: {
             horizon: 30,
             timePeriod: 'day',
-            aggregationMethod: 'mean'
+            aggregationMethod: 'sum'
         },
         training: {
             selectedTargets: [],
@@ -168,50 +169,112 @@ const Results = () => {
         console.log('Filtered historical data:', historicalData);
         console.log('Filtered forecast data:', forecastData);
 
-        let traces = [];
+        let traces = [];        // Add historical data trace
+        if (historicalData.length > 0) {            const formatValue = (value, targetId) => {
+                if (targetId === 'transformOrdNo' || targetId === 'woNumber') {
+                    return Math.round(value); // Orders and Work Orders must be whole numbers
+                } else if (targetId === 'quantity') {
+                    return Math.round(value); // Products are typically whole units
+                } else if (targetId === 'workers_needed') {
+                    return Number(value.toFixed(2)); // Workers can have 2 decimal places for part-time
+                }
+                return value;
+            };
 
-        // Add historical data trace
-        if (historicalData.length > 0) {
+            const getHoverTemplate = (targetId) => {
+                if (targetId === 'transformOrdNo' || targetId === 'woNumber' || targetId === 'quantity') {
+                    return '%{y:.0f}<extra>Historical</extra>';
+                }
+                return '%{y:.2f}<extra>Historical</extra>';
+            };
+
             traces.push({
                 name: 'Historical',
                 x: historicalData.map(d => new Date(d.date)),
-                y: historicalData.map(d => d[target.id]),
+                y: historicalData.map(d => formatValue(d[target.id], target.id)),
                 type: 'scatter',
                 mode: 'lines',
                 line: { color: '#2563eb', width: 2 },
-                hovertemplate: '%{y:,.0f}<extra>Historical</extra>'
+                hovertemplate: getHoverTemplate(target.id)
             });
-        }
-
-        // Add forecast data and confidence intervals
+        }        // Add forecast data and confidence intervals
         if (forecastData.length > 0) {
-            // Add confidence intervals first (to appear behind the forecast line)
+            // Get the last historical date for proper transition
+            const lastHistoricalDate = new Date(historicalData[historicalData.length - 1].date);
+            const lastHistoricalValue = historicalData[historicalData.length - 1][target.id];
+            const firstForecastDate = new Date(forecastData[0].date);
+            const firstForecastValue = forecastData[0][target.id];
+
+            // Add transition marker
             traces.push({
-                name: 'Confidence Interval',
-                x: [...forecastData.map(d => new Date(d.date)), ...forecastData.map(d => new Date(d.date)).reverse()],
-                y: [...forecastData.map(d => d[target.id] * 1.1), ...forecastData.map(d => d[target.id] * 0.9).reverse()],
-                fill: 'toself',
-                fillcolor: 'rgba(5, 150, 105, 0.1)',
-                line: { color: 'transparent' },
+                name: 'Transition Point',
+                x: [lastHistoricalDate],
+                y: [lastHistoricalValue],
+                type: 'scatter',
+                mode: 'markers',
+                marker: { 
+                    color: '#ef4444',
+                    size: 8,
+                    symbol: 'diamond',
+                },
                 showlegend: false,
-                hoverinfo: 'skip'
+                hovertemplate: 'Last Historical Point<br>Date: %{x}<br>Value: %{y:,.0f}<extra></extra>'
             });
 
-            // Add forecast line
+            // Add connecting line between historical and forecast
             traces.push({
-                name: 'Forecast',
-                x: forecastData.map(d => new Date(d.date)),
-                y: forecastData.map(d => d[target.id]),
+                name: 'Connection',
+                x: [lastHistoricalDate, firstForecastDate],
+                y: [lastHistoricalValue, firstForecastValue],
                 type: 'scatter',
                 mode: 'lines',
                 line: { 
                     color: '#059669',
                     width: 2,
-                    dash: 'dash'
+                    dash: 'dot'
                 },
-                hovertemplate: '%{y:,.0f}<extra>Forecast</extra>'
+                showlegend: false,
+                hoverinfo: 'skip'
+            });            // Add confidence intervals (only for forecast period)
+            if (forecastData[0]?.upper && forecastData[0]?.lower) {
+                traces.push({
+                    name: 'Confidence Interval',
+                    x: [...forecastData.map(d => new Date(d.date)), ...forecastData.map(d => new Date(d.date)).reverse()],
+                    y: [...forecastData.map(d => d.upper), ...forecastData.map(d => d.lower).reverse()],
+                    fill: 'toself',
+                    fillcolor: 'rgba(5, 150, 105, 0.1)',
+                    line: { color: 'transparent' },
+                    showlegend: false,
+                    hoverinfo: 'skip'
+                });
+            } else {
+                // Fallback to a simple ±5% confidence interval for EMA
+                const volatility = 0.05; // 5% variation
+                traces.push({
+                    name: 'Confidence Interval',
+                    x: [...forecastData.map(d => new Date(d.date)), ...forecastData.map(d => new Date(d.date)).reverse()],
+                    y: [...forecastData.map(d => d[target.id] * (1 + volatility)), 
+                       ...forecastData.map(d => d[target.id] * (1 - volatility)).reverse()],
+                    fill: 'toself',
+                    fillcolor: 'rgba(5, 150, 105, 0.1)',
+                    line: { color: 'transparent' },
+                    showlegend: false,
+                    hoverinfo: 'skip'
+                });
+            }            // Add forecast line (only for future dates)
+            traces.push({
+                name: 'Forecast',
+                x: forecastData.map(d => new Date(d.date)),
+                y: forecastData.map(d => target.id === 'transformOrdNo' ? Math.round(d[target.id]) : d[target.id]),
+                type: 'scatter',
+                mode: 'lines',
+                line: { 
+                    color: '#059669',
+                    width: 2
+                },
+                hovertemplate: target.id === 'transformOrdNo' ? '%{y:.0f}<extra>Forecast</extra>' : '%{y:,.2f}<extra>Forecast</extra>'
             });
-        }        // Create layout with proper formatting
+        }        // Create layout with proper formatting and transition marker
         const layout = {
             autosize: true,
             height: 400,
@@ -221,7 +284,11 @@ const Results = () => {
                 type: 'date',
                 tickformat: '%Y-%m-%d',
                 showgrid: true,
-                gridcolor: 'rgba(0,0,0,0.1)'
+                gridcolor: 'rgba(0,0,0,0.1)',
+                rangeslider: {
+                    visible: true,
+                    thickness: 0.05
+                }
             },
             yaxis: { 
                 title: target.name,
@@ -231,6 +298,16 @@ const Results = () => {
                 zerolinecolor: 'rgba(0,0,0,0.2)'
             },
             hovermode: 'x unified',
+            annotations: historicalData.length > 0 ? [{                x: historicalData[historicalData.length - 1].date,
+                y: 0.95,
+                yref: 'paper',
+                text: 'Historical End',
+                showarrow: true,
+                arrowhead: 2,
+                arrowcolor: '#ef4444',
+                ax: 0,
+                ay: -20
+            }] : [],
             showlegend: true,
             legend: {
                 orientation: 'h',

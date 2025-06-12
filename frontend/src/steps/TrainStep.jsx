@@ -16,15 +16,7 @@ const TrainStep = () => {
         { id: 'quantity', name: 'Products', description: 'Total products ordered' },
         { id: 'workers_needed', name: 'Employees', description: 'Required workforce' },
         { id: 'woNumber', name: 'Work Orders', description: 'Number of unique work orders' }
-    ];    // Model recommendations based on target type
-    const targetModelRecommendations = {
-        transformOrdNo: ['Prophet', 'ARIMA'], // Best for order counts
-        quantity: ['RandomForest', 'LSTM'],   // Best for continuous quantities
-        workers_needed: ['Prophet', 'RandomForest'], // Best for workforce planning
-        woNumber: ['ARIMA', 'LSTM']          // Best for work order patterns
-    };
-
-    const modelTypes = [
+    ];    const modelTypes = [
         { 
             id: 'Prophet', 
             name: 'Prophet', 
@@ -48,25 +40,27 @@ const TrainStep = () => {
             name: 'Random Forest', 
             description: 'Robust ensemble learning method',
             strengths: 'Handles non-linear relationships and outliers well'
+        },
+        {
+            id: 'EMA',
+            name: 'EMA',
+            description: 'Exponential Moving Average for trend following',
+            strengths: 'Simple, fast, and effective for stable trends'
+        },
+        {
+            id: 'HoltWinters',
+            name: 'Holt-Winters',
+            description: 'Triple exponential smoothing with seasonality',
+            strengths: 'Excellent for data with clear seasonal patterns'
         }
-    ];    const handleTargetChange = (targetId) => {
+    ];const handleTargetChange = (targetId) => {
         setSelectedTargets(prev => {
             if (prev.includes(targetId)) {
                 const newTargets = prev.filter(t => t !== targetId);
                 const newModelSelections = { ...modelSelections };
                 delete newModelSelections[targetId];
                 setModelSelections(newModelSelections);
-                return newTargets;
-            } else {
-                // Auto-select the first recommended model for this target
-                if (targetModelRecommendations[targetId]?.length > 0) {
-                    const recommendedModel = targetModelRecommendations[targetId][0];
-                    setModelSelections(prev => ({
-                        ...prev,
-                        [targetId]: recommendedModel
-                    }));
-                    toast.success(`Recommended model ${recommendedModel} auto-selected for ${availableTargets.find(t => t.id === targetId).name}`);
-                }
+                return newTargets;            } else {
                 return [...prev, targetId];
             }
         });
@@ -78,22 +72,13 @@ const TrainStep = () => {
             [targetId]: modelId
         }));
     };    const validateModelSelections = () => {
-        // Check for monthly data with appropriate models
-        if (process.timePeriod === 'month') {
-            for (const targetId of selectedTargets) {
-                const selectedModel = modelSelections[targetId];
-                if (selectedModel === 'LSTM' && process.horizon > 12) {
-                    throw new Error('For monthly data with horizon > 12 months, Prophet or ARIMA is recommended');
-                }
-            }
-        }
-        
-        // Validate minimum data points for LSTM
-        if (process.timePeriod === 'day' && process.horizon > 90) {
-            const lstmTargets = selectedTargets.filter(t => modelSelections[t] === 'LSTM');
-            if (lstmTargets.length > 0) {
-                throw new Error('For long-term daily forecasts (>90 days), Prophet or RandomForest is recommended');
-            }
+        // Only check if models are selected for all targets
+        const missingModels = selectedTargets.filter(targetId => !modelSelections[targetId]);
+        if (missingModels.length > 0) {
+            const targetNames = missingModels
+                .map(id => availableTargets.find(t => t.id === id)?.name)
+                .filter(Boolean);
+            throw new Error(`Please select models for: ${targetNames.join(', ')}`);
         }
     };
 
@@ -108,12 +93,7 @@ const TrainStep = () => {
             // Validate model selections
             validateModelSelections();
 
-            // Validate model selections
-            for (const targetId of selectedTargets) {
-                if (!modelSelections[targetId]) {
-                    throw new Error(`Please select a model for ${availableTargets.find(t => t.id === targetId).name}`);
-                }
-            }            // Store selections in localStorage with full model information
+            // Store selections in localStorage with full model information
             const modelSelectionsWithInfo = {};
             for (const targetId in modelSelections) {
                 const modelId = modelSelections[targetId];
@@ -207,8 +187,7 @@ const TrainStep = () => {
                     Select Target Variables
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {availableTargets.map(target => (
-                        <div
+                    {availableTargets.map(target => (                        <div
                             key={target.id}
                             onClick={() => handleTargetChange(target.id)}
                             className={`p-4 rounded-lg border-2 cursor-pointer transition-all
@@ -239,9 +218,7 @@ const TrainStep = () => {
                         const target = availableTargets.find(t => t.id === targetId);
                         return (
                             <div key={targetId} className="space-y-3">
-                                <h4 className="font-medium text-gray-700">{target.name}</h4>                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    {modelTypes.map(model => {
-                                        const isRecommended = targetModelRecommendations[targetId]?.includes(model.id);
+                                <h4 className="font-medium text-gray-700">{target.name}</h4>                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">                                {modelTypes.map(model => {
                                         return (
                                             <div
                                                 key={model.id}
@@ -249,17 +226,8 @@ const TrainStep = () => {
                                                 className={`p-3 rounded-lg border cursor-pointer transition-all relative
                                                     ${modelSelections[targetId] === model.id
                                                         ? 'border-green-500 bg-green-50'
-                                                        : isRecommended 
-                                                          ? 'border-blue-200 hover:border-blue-300'
-                                                          : 'border-gray-200 hover:border-gray-300'}`}
+                                                        : 'border-gray-200 hover:border-gray-300'}`}
                                             >
-                                                {isRecommended && (
-                                                    <div className="absolute top-0 right-0 transform translate-x-1/4 -translate-y-1/4">
-                                                        <div className="bg-blue-500 text-white text-xs px-2 py-1 rounded-full">
-                                                            Recommended
-                                                        </div>
-                                                    </div>
-                                                )}
                                                 <div className="flex items-center justify-between">
                                                     <span className="font-medium">{model.name}</span>
                                                     {modelSelections[targetId] === model.id && (

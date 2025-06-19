@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { useWorkflow } from '@/contexts/WorkflowContext';
 import { Button } from '@/components/ui/button';
@@ -34,15 +34,23 @@ const Results = () => {
         training: {
             selectedTargets: [],
             modelSelections: {}
-        }
-    });
-    const chartsRef = useRef({});
+        }    });
+
     const availableTargets = [
         { id: 'transformOrdNo', name: 'Orders', description: 'Number of unique orders' },
         { id: 'quantity', name: 'Products', description: 'Total products ordered' },
         { id: 'workers_needed', name: 'Employees', description: 'Required workforce' },
         { id: 'woNumber', name: 'Work Orders', description: 'Number of unique work orders' }
-    ];
+    ];    // Enhanced color palette matching AnimatedChart.jsx design
+    const getColorPalette = (targetId) => {
+        // All targets now use the same professional color scheme from AnimatedChart.jsx
+        return {
+            historical: '#4f46e5',    // Indigo-600 - consistent historical data color
+            forecast: '#f59e0b',      // Amber-500 - consistent forecast color  
+            confidence: 'rgba(245, 158, 11, 0.1)',  // Amber with low opacity
+            divider: '#ef4444'        // Red-500 - for transition/today line
+        };
+    };
 
     // Effect to load initial data
     useEffect(() => {
@@ -158,8 +166,8 @@ const Results = () => {
         };
         
         loadConfiguration();
-    }, []);    const createPlotlyChart = (target, data) => {
-        if (!data || data.length === 0) {
+    }, []);    const createPlotlyChart = (target, data, timePeriod = 'day') => {
+        if (!data || data.length === 0 || !target) {
             return { data: [], layout: {} };
         }
 
@@ -169,7 +177,43 @@ const Results = () => {
         console.log('Filtered historical data:', historicalData);
         console.log('Filtered forecast data:', forecastData);
 
-        let traces = [];        // Add historical data trace
+        // Ensure we have data to display
+        if (historicalData.length === 0 && forecastData.length === 0) {
+            return { data: [], layout: {} };
+        }
+
+        // Get color palette for this target
+        const colors = getColorPalette(target.id);// Function to get appropriate date format and tick angle based on time period
+        const getDateFormatting = (period) => {
+            switch (period) {
+                case 'month':
+                    return {
+                        tickformat: '%Y %b',  // 2025 Jan, 2025 Feb, etc.
+                        tickmode: 'auto',     // Let Plotly handle tick spacing
+                        nticks: 12,           // Suggest max 12 ticks for months
+                        tickangle: -45        // 45-degree angle
+                    };
+                case 'week':
+                    return {
+                        tickformat: '%Y-%m-%d',  // Weekly with full date
+                        tickmode: 'auto',        // Let Plotly handle tick spacing
+                        nticks: 8,               // Suggest max 8 ticks for weeks
+                        tickangle: -30           // 30-degree angle
+                    };
+                case 'day':
+                default:
+                    return {
+                        tickformat: '%Y-%m-%d',  // Daily format
+                        tickmode: 'auto',        // Let Plotly handle tick spacing
+                        nticks: 10,              // Suggest max 10 ticks for days
+                        tickangle: -45           // 45-degree angle
+                    };
+            }
+        };
+
+        const dateFormatting = getDateFormatting(timePeriod);
+
+        let traces = [];// Add historical data trace
         if (historicalData.length > 0) {            const formatValue = (value, targetId) => {
                 if (targetId === 'transformOrdNo' || targetId === 'woNumber') {
                     return Math.round(value); // Orders and Work Orders must be whole numbers
@@ -186,16 +230,20 @@ const Results = () => {
                     return '%{y:.0f}<extra>Historical</extra>';
                 }
                 return '%{y:.2f}<extra>Historical</extra>';
-            };
-
-            traces.push({
+            };            traces.push({
                 name: 'Historical',
                 x: historicalData.map(d => new Date(d.date)),
                 y: historicalData.map(d => formatValue(d[target.id], target.id)),
                 type: 'scatter',
                 mode: 'lines',
-                line: { color: '#2563eb', width: 2 },
-                hovertemplate: getHoverTemplate(target.id)
+                line: { 
+                    color: colors.historical,  // Dynamic color based on target
+                    width: 3,
+                    shape: 'spline',  // Smooth curves for better visual appeal
+                    smoothing: 0.3
+                },
+                hovertemplate: getHoverTemplate(target.id),
+                connectgaps: true
             });
         }        // Add forecast data and confidence intervals
         if (forecastData.length > 0) {
@@ -203,9 +251,7 @@ const Results = () => {
             const lastHistoricalDate = new Date(historicalData[historicalData.length - 1].date);
             const lastHistoricalValue = historicalData[historicalData.length - 1][target.id];
             const firstForecastDate = new Date(forecastData[0].date);
-            const firstForecastValue = forecastData[0][target.id];
-
-            // Add transition marker
+            const firstForecastValue = forecastData[0][target.id];            // Add transition marker
             traces.push({
                 name: 'Transition Point',
                 x: [lastHistoricalDate],
@@ -213,15 +259,17 @@ const Results = () => {
                 type: 'scatter',
                 mode: 'markers',
                 marker: { 
-                    color: '#ef4444',
-                    size: 8,
-                    symbol: 'diamond',
+                    color: colors.divider,  // Red-500 - matching AnimatedChart today line
+                    size: 5,
+                    symbol: 'dot',
+                    line: {
+                        color: '#b91c1c',  // Darker red border
+                        width: 2
+                    }
                 },
                 showlegend: false,
-                hovertemplate: 'Last Historical Point<br>Date: %{x}<br>Value: %{y:,.0f}<extra></extra>'
-            });
-
-            // Add connecting line between historical and forecast
+                hovertemplate: 'Transition Point<br>Date: %{x}<br>Value: %{y:,.0f}<extra></extra>'
+            });            // Add connecting line between historical and forecast
             traces.push({
                 name: 'Connection',
                 x: [lastHistoricalDate, firstForecastDate],
@@ -229,9 +277,9 @@ const Results = () => {
                 type: 'scatter',
                 mode: 'lines',
                 line: { 
-                    color: '#059669',
-                    width: 2,
-                    dash: 'dot'
+                    color: colors.forecast,  // Use forecast color for smooth transition
+                    width: 0.5,
+                    dash: 'dot'  // Subtle dotted connection
                 },
                 showlegend: false,
                 hoverinfo: 'skip'
@@ -242,8 +290,11 @@ const Results = () => {
                     x: [...forecastData.map(d => new Date(d.date)), ...forecastData.map(d => new Date(d.date)).reverse()],
                     y: [...forecastData.map(d => d.upper), ...forecastData.map(d => d.lower).reverse()],
                     fill: 'toself',
-                    fillcolor: 'rgba(5, 150, 105, 0.1)',
-                    line: { color: 'transparent' },
+                    fillcolor: colors.confidence,  // Amber with low opacity
+                    line: { 
+                        color: 'rgba(245, 158, 11, 0.3)',  // Amber border with opacity
+                        width: 0
+                    },
                     showlegend: false,
                     hoverinfo: 'skip'
                 });
@@ -256,68 +307,137 @@ const Results = () => {
                     y: [...forecastData.map(d => d[target.id] * (1 + volatility)), 
                        ...forecastData.map(d => d[target.id] * (1 - volatility)).reverse()],
                     fill: 'toself',
-                    fillcolor: 'rgba(5, 150, 105, 0.1)',
-                    line: { color: 'transparent' },
+                    fillcolor: colors.confidence,  // Amber with low opacity
+                    line: { 
+                        color: 'rgba(245, 158, 11, 0.3)',  // Amber border with opacity
+                        width: 0
+                    },
                     showlegend: false,
                     hoverinfo: 'skip'
                 });
-            }            // Add forecast line (only for future dates)
+            }// Add forecast line (only for future dates)
             traces.push({
                 name: 'Forecast',
                 x: forecastData.map(d => new Date(d.date)),
                 y: forecastData.map(d => target.id === 'transformOrdNo' ? Math.round(d[target.id]) : d[target.id]),
                 type: 'scatter',
-                mode: 'lines',
+                mode: 'lines+markers',  // Add markers for forecast points
                 line: { 
-                    color: '#059669',
-                    width: 2
+                    color: colors.forecast,  // Amber-500 - matching AnimatedChart
+                    width: 3,
+                    shape: 'spline',  // Smooth curves
+                    smoothing: 0.3,
+                    dash: 'dash'  // Dashed line for forecast - matching AnimatedChart
                 },
-                hovertemplate: target.id === 'transformOrdNo' ? '%{y:.0f}<extra>Forecast</extra>' : '%{y:,.2f}<extra>Forecast</extra>'
+                marker: {
+                    color: colors.forecast,
+                    size: 6,
+                    symbol: 'circle',
+                    line: {
+                        color: colors.historical,  // Indigo border for contrast
+                        width: 1
+                    }
+                },
+                hovertemplate: target.id === 'transformOrdNo' ? '%{y:.0f}<extra>Forecast</extra>' : '%{y:,.2f}<extra>Forecast</extra>',
+                connectgaps: true
             });
-        }        // Create layout with proper formatting and transition marker
+        }        // Create layout with enhanced styling and colors
         const layout = {
             autosize: true,
-            height: 400,
-            title: `${target.name} Forecast`,
-            xaxis: { 
-                title: 'Date',
+            height: 450,
+            title: {
+                text: `${target.name} Forecast`,
+                font: {
+                    size: 18,
+                    color: '#1f2937',
+                    family: 'Inter, sans-serif'
+                },
+                x: 0.02
+            },            xaxis: { 
+                title: {
+                    text: 'Date',
+                    font: {
+                        size: 14,
+                        color: '#374151'
+                    }
+                },
                 type: 'date',
-                tickformat: '%Y-%m-%d',
+                tickformat: dateFormatting.tickformat,
+                tickmode: dateFormatting.tickmode,
+                nticks: dateFormatting.nticks,
+                tickangle: dateFormatting.tickangle,
                 showgrid: true,
-                gridcolor: 'rgba(0,0,0,0.1)',
+                gridcolor: 'rgba(156, 163, 175, 0.3)',
+                gridwidth: 1,
                 rangeslider: {
                     visible: true,
-                    thickness: 0.05
+                    thickness: 0.05,
+                    bgcolor: 'rgba(243, 244, 246, 0.8)',
+                    bordercolor: 'rgba(156, 163, 175, 0.5)',
+                    borderwidth: 1
+                },
+                tickfont: {
+                    size: 12,
+                    color: '#6b7280'
                 }
             },
             yaxis: { 
-                title: target.name,
+                title: {
+                    text: target.name,
+                    font: {
+                        size: 14,
+                        color: '#374151'
+                    }
+                },
                 showgrid: true,
-                gridcolor: 'rgba(0,0,0,0.1)',
+                gridcolor: 'rgba(156, 163, 175, 0.3)',
+                gridwidth: 1,
                 zeroline: true,
-                zerolinecolor: 'rgba(0,0,0,0.2)'
+                zerolinecolor: 'rgba(75, 85, 99, 0.4)',
+                zerolinewidth: 2,
+                tickfont: {
+                    size: 12,
+                    color: '#6b7280'
+                }
             },
             hovermode: 'x unified',
-            annotations: historicalData.length > 0 ? [{                x: historicalData[historicalData.length - 1].date,
+            plot_bgcolor: 'rgba(255, 255, 255, 0.95)',
+            paper_bgcolor: 'rgba(255, 255, 255, 1)',
+            legend: {
+                x: 0.02,
+                y: 0.98,
+                bgcolor: 'rgba(255, 255, 255, 0.9)',
+                bordercolor: 'rgba(156, 163, 175, 0.5)',
+                borderwidth: 1,
+                font: {
+                    size: 12,
+                    color: '#374151'
+                }
+            },
+            margin: {
+                l: 60,                r: 30,
+                t: 60,
+                b: 50
+            },            annotations: historicalData.length > 0 ? [{
+                x: historicalData[historicalData.length - 1].date,
                 y: 0.95,
                 yref: 'paper',
-                text: 'Historical End',
+                text: 'Forecast Start',
                 showarrow: true,
-                arrowhead: 2,
-                arrowcolor: '#ef4444',
+                arrowhead: 3,
+                arrowcolor: colors.divider,  // Red-500 for consistency
+                arrowsize: 1.5,
                 ax: 0,
-                ay: -20
-            }] : [],
-            showlegend: true,
-            legend: {
-                orientation: 'h',
-                y: -0.2
-            },
-            margin: { t: 40, r: 10, b: 40, l: 60 },
-            plot_bgcolor: 'white'
-        };
-
-        // Add divider line at the last historical date if we have both types of data
+                ay: -30,
+                font: {
+                    size: 12,
+                    color: colors.divider  // Red-500 for consistency
+                },
+                bgcolor: 'rgba(239, 68, 68, 0.1)',  // Red background with opacity
+                bordercolor: colors.divider,  // Red-500 border
+                borderwidth: 1
+            }] : []
+        };        // Add divider line at the last historical date if we have both types of data
         if (historicalData.length > 0 && forecastData.length > 0) {
             const lastHistoricalDate = new Date(historicalData[historicalData.length - 1].date);
             layout.shapes = [{
@@ -328,30 +448,13 @@ const Results = () => {
                 y1: 1,
                 yref: 'paper',
                 line: {
-                    color: '#ef4444',
-                    width: 1,
-                    dash: 'dot'
+                    color: colors.divider,  // Red-500 to match AnimatedChart today line
+                    width: 2,
+                    dash: 'dash'
                 }
             }];
-        }
-
-        return { data: traces, layout };
-    };
-
-    useEffect(() => {
-        if (results && results.length > 0) {
-            // Draw charts for each target after a small delay to allow for DOM updates
-            setTimeout(() => {
-                availableTargets.forEach(target => {
-                    if (results.some(r => r[target.id] !== undefined) && chartsRef.current[target.id]) {
-                        createPlotlyChart(target, results, chartsRef.current[target.id]);
-                    }
-                });
-            }, 100);
-        }
-    }, [results]);
-
-    // Effect to update accuracy metrics when target changes
+        }        return { data: traces, layout };
+    };    // Effect to update accuracy metrics when target changes
     useEffect(() => {
         if (results && results.length > 0 && selectedTarget) {
             const historicalData = results.filter(d => d.type === 'historical');
@@ -360,6 +463,25 @@ const Results = () => {
             setAccuracyMetrics(metrics);
         }
     }, [selectedTarget, results]); // Only run when selected target or results change
+
+    // Memoize chart data for all targets to avoid re-computation and fix hooks issue
+    const chartsData = useMemo(() => {
+        if (!results || !results.length || !configuration.training.selectedTargets) {
+            return {};
+        }
+        
+        const data = {};
+        availableTargets
+            .filter(target => 
+                configuration.training.selectedTargets.includes(target.id) && 
+                results.some(r => r[target.id] !== undefined)
+            )
+            .forEach(target => {
+                data[target.id] = createPlotlyChart(target, results, configuration.process?.timePeriod || 'day');
+            });
+        
+        return data;
+    }, [results, configuration.training.selectedTargets, configuration.process?.timePeriod]);
 
     const calculateAccuracyMetrics = (historicalData, forecastData, targetId) => {
         if (!historicalData || !forecastData || historicalData.length === 0 || forecastData.length === 0) {
@@ -568,13 +690,16 @@ const Results = () => {
                             </div>
                         </div>
                     </div>{/* Forecast Visualizations */}
-                    <div className="space-y-8">
-                        {availableTargets
+                    <div className="space-y-8">                        {availableTargets
                             .filter(target => 
                                 configuration.training.selectedTargets.includes(target.id) && 
                                 results.some(r => r[target.id] !== undefined)
                             )
-                            .map((target) => (
+                            .map((target) => {
+                                // Get pre-computed chart data
+                                const chartData = chartsData[target.id] || { data: [], layout: {} };
+                                
+                                return (
                             <div key={target.id} className="bg-white rounded-xl shadow-md p-6 border border-gray-100">
                                 <h3 className="text-xl font-semibold text-gray-800 mb-4">{target.name} Forecast</h3>
                                 <p className="text-sm text-gray-500 mb-4">{target.description}</p>
@@ -618,19 +743,26 @@ const Results = () => {
                                         </div>
                                     </div>
                                 )}
-                                
-                                {/* Plotly Chart */}                                <Plot
-                                    data={createPlotlyChart(target, results).data}
-                                    layout={createPlotlyChart(target, results).layout}
-                                    style={{ width: '100%' }}
-                                    config={{ 
-                                        responsive: true,
-                                        displayModeBar: true,
-                                        modeBarButtonsToRemove: ['lasso2d', 'select2d']
-                                    }}
-                                />
+                                  {/* Plotly Chart */}
+                                {chartData.data && chartData.data.length > 0 ? (
+                                    <Plot
+                                        data={chartData.data}
+                                        layout={chartData.layout}
+                                        style={{ width: '100%' }}
+                                        config={{ 
+                                            responsive: true,
+                                            displayModeBar: true,
+                                            modeBarButtonsToRemove: ['lasso2d', 'select2d']
+                                        }}
+                                    />
+                                ) : (
+                                    <div className="flex items-center justify-center h-64 bg-gray-50 rounded-lg">
+                                        <p className="text-gray-500">No chart data available for {target.name}</p>
+                                    </div>
+                                )}
                             </div>
-                        ))}
+                                );
+                            })}
                     </div>                    {/* Empty to remove the selected target visualization section */}
                 </div>
             </motion.div>

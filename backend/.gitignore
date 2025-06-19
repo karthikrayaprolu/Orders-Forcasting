@@ -1,2 +1,28 @@
 venv
 __pycache__
+uploads
+/.env
+
+# Log directories and files
+logs/
+logs/historical/*.xlsx
+logs/forecast/*.xlsx
+logs/historical/*.json
+logs/forecast/*.json
+
+# Model directories and files
+models/
+models/trained_weights/*.pkl
+models/trained_weights/*.h5
+models/trained_weights/*.json
+models/trained_weights/*.joblib
+
+# Keep directory structure but ignore contents
+!logs/
+!logs/historical/
+!logs/forecast/
+!models/
+!models/trained_weights/
+
+# Keep .gitkeep files if any
+!**/.gitkeep

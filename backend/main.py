@@ -7,6 +7,10 @@ from io import BytesIO
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import json
+import os
+import pickle
+import joblib
 
 # Forecasting libraries
 from statsmodels.tsa.arima.model import ARIMA
@@ -37,6 +41,115 @@ app.add_middleware(
 # Global cache
 data_store = {}
 
+# Utility function to save logs in Excel format
+def save_forecast_logs(historical_data, forecast_data, forecast_params):
+    """
+    Save historical and forecast data to respective log folders with timestamps in Excel format
+    
+    Args:
+        historical_data: DataFrame containing historical data
+        forecast_data: DataFrame containing forecast predictions
+        forecast_params: Dictionary containing forecast parameters (time_period, targets, models, etc.)
+    """
+    try:
+        # Create timestamp
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        
+        # Extract parameters for filename
+        time_period = forecast_params.get('time_period', 'day')
+        targets = forecast_params.get('targets', [])
+        models = forecast_params.get('models', {})
+        horizon = forecast_params.get('horizon', 0)
+        
+        # Create descriptive filename components
+        targets_str = "-".join(targets) if targets else "unknown"
+        models_str = "-".join(set(models.values())) if models else "unknown"
+        
+        # Define folder paths (relative to main.py)
+        historical_folder = "logs/historical"
+        forecast_folder = "logs/forecast"
+        
+        # Create folders if they don't exist
+        os.makedirs(historical_folder, exist_ok=True)
+        os.makedirs(forecast_folder, exist_ok=True)
+          # Create filenames (now with .xlsx extension)
+        base_filename = f"{time_period}_{targets_str}_{models_str}_h{horizon}_{timestamp}"
+        historical_filename = f"historical_{base_filename}.xlsx"
+        forecast_filename = f"forecast_{base_filename}.xlsx"
+        
+        # Prepare and save historical data
+        if not historical_data.empty:
+            # Create metadata dataframe
+            historical_metadata = pd.DataFrame([{
+                "timestamp": timestamp,
+                "forecast_type": time_period,
+                "targets": ", ".join(targets) if targets else "unknown",
+                "models_used": ", ".join(set(models.values())) if models else "unknown",
+                "horizon": horizon,
+                "aggregation_method": forecast_params.get('aggregation_method', 'mean'),
+                "data_points": len(historical_data),
+                "date_range_start": historical_data['date'].min() if 'date' in historical_data.columns else None,
+                "date_range_end": historical_data['date'].max() if 'date' in historical_data.columns else None
+            }])
+            
+            # Save historical data to Excel
+            historical_path = os.path.join(historical_folder, historical_filename)
+            with pd.ExcelWriter(historical_path, engine='openpyxl') as writer:
+                # Save metadata in first sheet
+                historical_metadata.to_excel(writer, sheet_name='Metadata', index=False)
+                # Save actual data in second sheet
+                historical_data.to_excel(writer, sheet_name='Historical_Data', index=False)
+            
+            print(f"Historical data saved to: {historical_path}")
+        
+        # Prepare and save forecast data
+        if not forecast_data.empty:
+            # Create metadata dataframe
+            forecast_metadata = pd.DataFrame([{
+                "timestamp": timestamp,
+                "forecast_type": time_period,
+                "targets": ", ".join(targets) if targets else "unknown", 
+                "models_used": ", ".join(set(models.values())) if models else "unknown",
+                "horizon": horizon,
+                "aggregation_method": forecast_params.get('aggregation_method', 'mean'),
+                "forecast_points": len(forecast_data),
+                "forecast_date_range_start": forecast_data['date'].min() if 'date' in forecast_data.columns else None,
+                "forecast_date_range_end": forecast_data['date'].max() if 'date' in forecast_data.columns else None
+            }])
+            
+            # Save forecast data to Excel
+            forecast_path = os.path.join(forecast_folder, forecast_filename)
+            with pd.ExcelWriter(forecast_path, engine='openpyxl') as writer:
+                # Save metadata in first sheet
+                forecast_metadata.to_excel(writer, sheet_name='Metadata', index=False)
+                # Save actual data in second sheet
+                forecast_data.to_excel(writer, sheet_name='Forecast_Data', index=False)
+            
+            print(f"Forecast data saved to: {forecast_path}")
+            
+        return {
+            "historical_file": historical_filename if not historical_data.empty else None,
+            "forecast_file": forecast_filename if not forecast_data.empty else None,
+            "timestamp": timestamp
+        }
+        
+    except Exception as e:
+        print(f"Error saving forecast logs: {str(e)}")
+        return None
+        with open(forecast_path, 'w') as f:
+            json.dump(forecast_log, f, indent=2, default=str)
+        print(f"Forecast data saved to: {forecast_path}")
+            
+        return {
+            "historical_file": historical_filename if not historical_data.empty else None,
+            "forecast_file": forecast_filename if not forecast_data.empty else None,
+            "timestamp": timestamp
+        }
+        
+    except Exception as e:
+        print(f"Error saving forecast logs: {str(e)}")
+        return None
+
 # Utils
 def clean_datetime(col):
     try:
@@ -51,6 +164,102 @@ def clean_datetime(col):
         print(f"Error processing dates: {e}")
         print(f"Sample values causing error: {col.head()}")
         return col
+
+# Utility function to save trained models
+def save_trained_model(model, model_type, target, model_params, series_info):
+    """
+    Save trained model weights/parameters to models folder with identifiable names
+    
+    Args:
+        model: The trained model object
+        model_type: Type of model (ARIMA, Prophet, LSTM, etc.)
+        target: Target variable name
+        model_params: Dictionary containing model training parameters
+        series_info: Information about the data series used for training
+    """
+    try:
+        # Create timestamp
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        
+        # Extract parameters for filename
+        time_period = model_params.get('time_period', 'day')
+        aggregation_method = model_params.get('aggregation_method', 'mean')
+        data_points = series_info.get('data_points', 0)
+        
+        # Define models folder path
+        models_folder = "models/trained_weights"
+        os.makedirs(models_folder, exist_ok=True)
+        
+        # Create descriptive filename
+        model_filename = f"{model_type}_{target}_{time_period}_{aggregation_method}_dp{data_points}_{timestamp}"
+        
+        # Save different model types with appropriate methods
+        if model_type == 'LSTM':
+            # Save Keras/TensorFlow model
+            model_path = os.path.join(models_folder, f"{model_filename}.h5")
+            model.save(model_path)
+            
+            # Also save scaler if exists
+            if 'scaler' in model_params:
+                scaler_path = os.path.join(models_folder, f"{model_filename}_scaler.pkl")
+                joblib.dump(model_params['scaler'], scaler_path)
+                
+        elif model_type == 'RandomForest':
+            # Save sklearn models
+            model_path = os.path.join(models_folder, f"{model_filename}.pkl")
+            joblib.dump(model, model_path)
+            
+        elif model_type == 'Prophet':
+            # Save Prophet model
+            model_path = os.path.join(models_folder, f"{model_filename}.pkl")
+            with open(model_path, 'wb') as f:
+                pickle.dump(model, f)
+                
+        elif model_type in ['ARIMA', 'HoltWinters']:
+            # Save statsmodels fitted results
+            model_path = os.path.join(models_folder, f"{model_filename}.pkl")
+            with open(model_path, 'wb') as f:
+                pickle.dump(model, f)
+                
+        else:
+            # Generic pickle save for other models (EMA, etc.)
+            model_path = os.path.join(models_folder, f"{model_filename}.pkl")
+            with open(model_path, 'wb') as f:
+                pickle.dump(model, f)
+        
+        # Save model metadata
+        metadata = {
+            "timestamp": timestamp,
+            "model_type": model_type,
+            "target": target,
+            "time_period": time_period,
+            "aggregation_method": aggregation_method,
+            "data_points": data_points,
+            "series_info": series_info,
+            "model_parameters": model_params,
+            "model_file": os.path.basename(model_path),
+            "date_range": series_info.get('date_range', {}),
+            "performance_metrics": model_params.get('performance_metrics', {})
+        }
+        
+        metadata_path = os.path.join(models_folder, f"{model_filename}_metadata.json")
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2, default=str)
+        
+        print(f"✓ Model saved: {model_path}")
+        print(f"✓ Metadata saved: {metadata_path}")
+        
+        return {
+            "model_file": os.path.basename(model_path),
+            "metadata_file": os.path.basename(metadata_path),
+            "timestamp": timestamp,
+            "model_type": model_type,
+            "target": target
+        }
+        
+    except Exception as e:
+        print(f"⚠ Error saving model weights: {str(e)}")
+        return None
 
 def handle_nan_values(df):
     """Handle NaN values in the DataFrame."""
@@ -79,11 +288,10 @@ def aggregate_targets(df, time_period='day', agg_method='mean'):
         
         # Remove any dates beyond the last valid date to prevent future data leakage
         df = df[df['createdAt'] <= last_valid_date]
-        
-        # Set up aggregation based on time period
+          # Set up aggregation based on time period
         freq_map = {
             'day': ('D', 'D'),           # Daily at midnight
-            'week': (f"W-{last_valid_date.strftime('%a').upper()}", 'W'),  # Weekly, anchored to last date
+            'week': ('W-FRI', 'W'),      # Weekly, anchored to Friday (end of week)
             'month': ('M', 'M')          # Monthly, at month end
         }
         freq, period_type = freq_map.get(time_period, ('D', 'D'))
@@ -166,9 +374,29 @@ def forecast_arima(series, steps):
         
         # Generate forecasts
         forecast = final_results.forecast(steps=steps)
-        
-        # Ensure non-negative values for counts
+          # Ensure non-negative values for counts
         forecast = np.maximum(forecast, 0)
+        
+        # Save trained model (optional)
+        try:
+            model_params = {
+                'arima_order': best_params,
+                'seasonal_period': seasonal_period,
+                'time_period': getattr(series, '_time_period', 'unknown'),
+                'aggregation_method': getattr(series, '_agg_method', 'unknown'),
+                'aic_score': best_aic
+            }
+            series_info = {
+                'data_points': len(series),
+                'date_range': {
+                    'start': str(series.index.min()) if len(series) > 0 else None,
+                    'end': str(series.index.max()) if len(series) > 0 else None
+                }
+            }
+            target_name = getattr(series, 'name', 'unknown_target')
+            save_trained_model(final_results, 'ARIMA', target_name, model_params, series_info)
+        except Exception as save_error:
+            print(f"⚠ Warning: Could not save ARIMA model: {str(save_error)}")
         
         return forecast.tolist()
     except Exception as e:
@@ -217,10 +445,32 @@ def forecast_prophet(series, steps):
           # Make future dataframe
         future = model.make_future_dataframe(periods=steps)
         forecast = model.predict(future)
-        
-        # Get forecasts and ensure non-negative values
+          # Get forecasts and ensure non-negative values
         forecasted_values = forecast['yhat'].tail(steps)
         forecasted_values = forecasted_values.clip(lower=0)  # Ensure no negative values
+        
+        # Save trained model (optional)
+        try:
+            model_params = {
+                'yearly_seasonality': 'auto',
+                'weekly_seasonality': 'auto', 
+                'daily_seasonality': 'auto',
+                'seasonality_mode': 'multiplicative',
+                'time_period': getattr(series, '_time_period', 'unknown'),
+                'aggregation_method': getattr(series, '_agg_method', 'unknown'),
+                'data_length_days': data_length
+            }
+            series_info = {
+                'data_points': len(series),
+                'date_range': {
+                    'start': str(series.index.min()) if len(series) > 0 else None,
+                    'end': str(series.index.max()) if len(series) > 0 else None
+                }
+            }
+            target_name = getattr(series, 'name', 'unknown_target')
+            save_trained_model(model, 'Prophet', target_name, model_params, series_info)
+        except Exception as save_error:
+            print(f"⚠ Warning: Could not save Prophet model: {str(save_error)}")
         
         return forecasted_values.tolist()
     except Exception as e:
@@ -293,8 +543,29 @@ def forecast_rf(series, steps):
             for lag in range(max_lags, 0, -1):
                 if lag == 1:
                     last_row[f'lag_{lag}'] = pred
-                else:
-                    last_row[f'lag_{lag}'] = last_row[f'lag_{lag-1}']
+                else:                    last_row[f'lag_{lag}'] = last_row[f'lag_{lag-1}']
+        
+        # Save trained model (optional)
+        try:
+            model_params = {
+                'n_estimators': 100,
+                'max_depth': 10,
+                'min_samples_split': 5,
+                'time_period': getattr(series, '_time_period', 'unknown'),
+                'aggregation_method': getattr(series, '_agg_method', 'unknown'),
+                'max_lags': max_lags
+            }
+            series_info = {
+                'data_points': len(series),
+                'date_range': {
+                    'start': str(series.index.min()) if len(series) > 0 else None,
+                    'end': str(series.index.max()) if len(series) > 0 else None
+                }
+            }
+            target_name = getattr(series, 'name', 'unknown_target')
+            save_trained_model(model, 'RandomForest', target_name, model_params, series_info)
+        except Exception as save_error:
+            print(f"⚠ Warning: Could not save RandomForest model: {str(save_error)}")
         
         return predictions
     except Exception as e:
@@ -362,9 +633,30 @@ def forecast_lstm(series, steps):
         
         # Inverse transform predictions
         forecast = scaler.inverse_transform(np.array(preds).reshape(-1, 1)).flatten().tolist()
-        
-        # Ensure non-negative values
+          # Ensure non-negative values
         forecast = [max(0, x) for x in forecast]
+        
+        # Save trained model (optional - can be enabled/disabled)
+        try:
+            model_params = {
+                'scaler': scaler,
+                'sequence_length': sequence_length,
+                'time_period': getattr(series, '_time_period', 'unknown'),
+                'aggregation_method': getattr(series, '_agg_method', 'unknown'),
+                'epochs': 50,
+                'batch_size': 32
+            }
+            series_info = {
+                'data_points': len(series),
+                'date_range': {
+                    'start': str(series.index.min()) if len(series) > 0 else None,
+                    'end': str(series.index.max()) if len(series) > 0 else None
+                }
+            }
+            target_name = getattr(series, 'name', 'unknown_target')
+            save_trained_model(model, 'LSTM', target_name, model_params, series_info)
+        except Exception as save_error:
+            print(f"⚠ Warning: Could not save LSTM model: {str(save_error)}")
         
         return forecast
     except Exception as e:
@@ -455,9 +747,30 @@ def forecast_holtwinters(series, steps):
         
         # Generate forecast
         forecast = fit.forecast(steps)
-        
-        # Ensure non-negative values
+          # Ensure non-negative values
         forecast = forecast.clip(lower=0)
+        
+        # Save trained model (optional)
+        try:
+            model_params = {
+                'seasonal_periods': seasonal_periods,
+                'trend': 'add',
+                'seasonal': 'add' if hasattr(model, 'seasonal') else None,
+                'time_period': getattr(series, '_time_period', 'unknown'),
+                'aggregation_method': getattr(series, '_agg_method', 'unknown'),
+                'initialization_method': 'estimated'
+            }
+            series_info = {
+                'data_points': len(series),
+                'date_range': {
+                    'start': str(series.index.min()) if len(series) > 0 else None,
+                    'end': str(series.index.max()) if len(series) > 0 else None
+                }
+            }
+            target_name = getattr(series, 'name', 'unknown_target')
+            save_trained_model(fit, 'HoltWinters', target_name, model_params, series_info)
+        except Exception as save_error:
+            print(f"⚠ Warning: Could not save HoltWinters model: {str(save_error)}")
         
         return forecast.tolist()
         
@@ -621,11 +934,14 @@ async def forecast(data: ForecastRequest):
             if target not in data.models:
                 return JSONResponse(
                     status_code=400,
-                    content={"error": f"No model specified for target: {target}"}
-                )
+                    content={"error": f"No model specified for target: {target}"}                )
                 
             try:
                 series = result_df.set_index('createdAt')[target]
+                
+                # Add metadata to series for model saving
+                series._time_period = data.time_period
+                series._agg_method = data.aggregation_method
                 
                 if data.models[target] == 'ARIMA':
                     forecasted = forecast_arima(series, data.horizon)
@@ -661,12 +977,14 @@ async def forecast(data: ForecastRequest):
           # Format outputs with appropriate date frequency
         # Get the last historical date
         last_date = result_df['createdAt'].max()
-        
-        # For weekly data, ensure we start from the next occurrence of the same weekday
+          # For weekly data, ensure we start from the next Friday (end of week)
         if data.time_period == 'week':
-            # Get the next occurrence of the same weekday
-            start_date = last_date + pd.Timedelta(days=7)  # Next week same day
-            freq = f"W-{last_date.strftime('%a').upper()}"  # Anchor to same weekday
+            # Calculate days until next Friday (4 = Friday, 0 = Monday)
+            days_until_friday = (4 - last_date.weekday()) % 7
+            if days_until_friday == 0:  # If today is Friday, go to next Friday
+                days_until_friday = 7
+            start_date = last_date + pd.Timedelta(days=days_until_friday)
+            freq = 'W-FRI'  # Weekly ending on Friday (end of business week)
         else:
             start_date = last_date + pd.Timedelta(days=1)
             freq = {'day': 'D', 'month': 'M'}[data.time_period]
@@ -694,27 +1012,53 @@ async def forecast(data: ForecastRequest):
         historical_df = historical_df.replace([np.inf, -np.inf], np.nan)
         forecast_df = forecast_df.fillna(0)
         historical_df = historical_df.fillna(0)
-        
-        # Round numeric values to prevent float precision issues
+          # Round numeric values to prevent float precision issues
         numeric_cols = forecast_df.select_dtypes(include=[np.number]).columns
         forecast_df[numeric_cols] = forecast_df[numeric_cols].round(2)
         numeric_cols = historical_df.select_dtypes(include=[np.number]).columns
         historical_df[numeric_cols] = historical_df[numeric_cols].round(2)
         
         # Combine historical and forecast data
-        df_result = pd.concat([historical_df, forecast_df], axis=0, sort=False)        # Convert dates to string format for JSON serialization
+        df_result = pd.concat([historical_df, forecast_df], axis=0, sort=False)
+        
+        # Convert dates to string format for JSON serialization
         df_result['date'] = df_result['date'].dt.strftime('%Y-%m-%d %H:%M:%S')
         
         # Convert numeric columns to float with 2 decimal places
         numeric_cols = [col for col in df_result.columns if col not in ['date', 'type']]
         df_result[numeric_cols] = df_result[numeric_cols].astype(float).round(2)
+        
         # Handle any NaN or infinite values before output
         df_result = df_result.replace([np.inf, -np.inf], np.nan)
         for col in [c for c in df_result.columns if c not in ['date', 'type']]:
             df_result[col] = df_result[col].fillna(0).astype(float).round(2)
-          # Filter to keep only relevant columns
+        
+        # Filter to keep only relevant columns
         columns_to_keep = ['date', 'type'] + data.targets
         df_result = df_result[columns_to_keep]
+
+        # Save logs (non-blocking - doesn't affect frontend response)
+        try:
+            # Separate historical and forecast data for logging
+            historical_log_data = df_result[df_result['type'] == 'historical'].copy()
+            forecast_log_data = df_result[df_result['type'] == 'forecast'].copy()
+            
+            # Prepare forecast parameters for logging
+            forecast_params = {
+                'time_period': data.time_period,
+                'targets': data.targets,
+                'models': data.models,
+                'horizon': data.horizon,
+                'aggregation_method': data.aggregation_method
+            }
+            
+            # Save logs (this runs in background and doesn't affect response)
+            log_result = save_forecast_logs(historical_log_data, forecast_log_data, forecast_params)
+            if log_result:
+                print(f"✓ Logs saved successfully at {log_result['timestamp']}")
+        except Exception as log_error:
+            print(f"⚠ Warning: Logging failed but continuing with response: {str(log_error)}")
+            # Continue with response even if logging fails
 
         # Split into visualization and download paths
         if data.forDownload:

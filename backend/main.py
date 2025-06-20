@@ -28,10 +28,19 @@ warnings.filterwarnings("ignore")
 
 app = FastAPI()
 
+# Environment-based CORS configuration
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+CORS_ORIGINS = [
+    FRONTEND_URL,
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",  # Alternative frontend port
+]
+
 # Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins in development
+    allow_origins=CORS_ORIGINS,  # Specific origins for credentials
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -960,9 +969,35 @@ async def forecast(data: ForecastRequest):
                         status_code=400,
                         content={"error": f"Invalid model type for {target}: {data.models[target]}"}
                     )
+                  # Apply smart rounding based on target type
+                def smart_round_forecast(values, target_name):
+                    """
+                    Apply appropriate rounding based on target type:
+                    - Orders (transformOrdNo): Always ceil (can't have partial orders)
+                    - Work Orders (woNumber): Always ceil (can't have partial work orders)  
+                    - Quantity: Floor (conservative estimate for inventory)
+                    - Workers (workers_needed): Round to 1 decimal (allows part-time workers)
+                    """
+                    rounded_values = []
+                    for val in values:
+                        if pd.isna(val):
+                            rounded_values.append(0)
+                        elif target_name in ['transformOrdNo', 'woNumber']:
+                            # Orders and work orders must be whole numbers, use ceiling
+                            rounded_values.append(int(np.ceil(max(0, val))))
+                        elif target_name == 'quantity':
+                            # Quantities should be conservative (floor) for inventory planning
+                            rounded_values.append(int(np.floor(max(0, val))))
+                        elif target_name == 'workers_needed':
+                            # Workers can be fractional (part-time), round to 1 decimal
+                            rounded_values.append(round(max(0, val), 1))
+                        else:
+                            # Default: round to 2 decimals for other metrics
+                            rounded_values.append(round(max(0, val), 2))
+                    return rounded_values
                 
-                # Replace any NaN values with 0
-                forecasted = [0 if pd.isna(x) else float(x) for x in forecasted]
+                # Apply smart rounding instead of simple float conversion
+                forecasted = smart_round_forecast(forecasted, target)
                 results[target] = forecasted
                 
             except Exception as e:
@@ -1011,12 +1046,41 @@ async def forecast(data: ForecastRequest):
         forecast_df = forecast_df.replace([np.inf, -np.inf], np.nan)
         historical_df = historical_df.replace([np.inf, -np.inf], np.nan)
         forecast_df = forecast_df.fillna(0)
-        historical_df = historical_df.fillna(0)
-          # Round numeric values to prevent float precision issues
-        numeric_cols = forecast_df.select_dtypes(include=[np.number]).columns
-        forecast_df[numeric_cols] = forecast_df[numeric_cols].round(2)
-        numeric_cols = historical_df.select_dtypes(include=[np.number]).columns
-        historical_df[numeric_cols] = historical_df[numeric_cols].round(2)
+        historical_df = historical_df.fillna(0)        # Smart rounding function for final data processing
+        def apply_smart_rounding_to_dataframe(df, target_columns):
+            """Apply target-specific rounding to dataframe columns"""
+            df_copy = df.copy()
+            for col in target_columns:
+                if col in df_copy.columns:
+                    if col in ['transformOrdNo', 'woNumber']:
+                        # Orders and work orders: integers (ceiling for forecasts, keep historical as-is)
+                        if 'type' in df_copy.columns:
+                            forecast_mask = df_copy['type'] == 'forecast'
+                            historical_mask = df_copy['type'] == 'historical'
+                            df_copy.loc[forecast_mask, col] = df_copy.loc[forecast_mask, col].apply(lambda x: int(np.ceil(max(0, x))) if pd.notna(x) else 0)
+                            df_copy.loc[historical_mask, col] = df_copy.loc[historical_mask, col].apply(lambda x: int(round(max(0, x))) if pd.notna(x) else 0)
+                        else:
+                            df_copy[col] = df_copy[col].apply(lambda x: int(np.ceil(max(0, x))) if pd.notna(x) else 0)
+                    elif col == 'quantity':
+                        # Quantities: integers (floor for conservative estimates)
+                        if 'type' in df_copy.columns:
+                            forecast_mask = df_copy['type'] == 'forecast'
+                            historical_mask = df_copy['type'] == 'historical'
+                            df_copy.loc[forecast_mask, col] = df_copy.loc[forecast_mask, col].apply(lambda x: int(np.floor(max(0, x))) if pd.notna(x) else 0)
+                            df_copy.loc[historical_mask, col] = df_copy.loc[historical_mask, col].apply(lambda x: int(round(max(0, x))) if pd.notna(x) else 0)
+                        else:
+                            df_copy[col] = df_copy[col].apply(lambda x: int(np.floor(max(0, x))) if pd.notna(x) else 0)
+                    elif col == 'workers_needed':
+                        # Workers: 1 decimal place (allows part-time workers)
+                        df_copy[col] = df_copy[col].apply(lambda x: round(max(0, x), 1) if pd.notna(x) else 0.0)
+                    else:
+                        # Other metrics: 2 decimal places
+                        df_copy[col] = df_copy[col].apply(lambda x: round(max(0, x), 2) if pd.notna(x) else 0.0)
+            return df_copy
+        
+        # Apply smart rounding to forecast and historical data separately
+        forecast_df = apply_smart_rounding_to_dataframe(forecast_df, data.targets)
+        historical_df = apply_smart_rounding_to_dataframe(historical_df, data.targets)
         
         # Combine historical and forecast data
         df_result = pd.concat([historical_df, forecast_df], axis=0, sort=False)
@@ -1024,14 +1088,20 @@ async def forecast(data: ForecastRequest):
         # Convert dates to string format for JSON serialization
         df_result['date'] = df_result['date'].dt.strftime('%Y-%m-%d %H:%M:%S')
         
-        # Convert numeric columns to float with 2 decimal places
-        numeric_cols = [col for col in df_result.columns if col not in ['date', 'type']]
-        df_result[numeric_cols] = df_result[numeric_cols].astype(float).round(2)
+        # Apply final smart rounding and handle NaN/infinite values
+        df_result = apply_smart_rounding_to_dataframe(df_result, data.targets)
         
-        # Handle any NaN or infinite values before output
+        # Handle any remaining NaN or infinite values
         df_result = df_result.replace([np.inf, -np.inf], np.nan)
         for col in [c for c in df_result.columns if c not in ['date', 'type']]:
-            df_result[col] = df_result[col].fillna(0).astype(float).round(2)
+            if col in ['transformOrdNo', 'woNumber']:
+                df_result[col] = df_result[col].fillna(0).astype(int)
+            elif col == 'quantity':
+                df_result[col] = df_result[col].fillna(0).astype(int) 
+            elif col == 'workers_needed':
+                df_result[col] = df_result[col].fillna(0.0).astype(float)
+            else:
+                df_result[col] = df_result[col].fillna(0.0).astype(float)
         
         # Filter to keep only relevant columns
         columns_to_keep = ['date', 'type'] + data.targets

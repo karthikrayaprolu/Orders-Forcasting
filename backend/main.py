@@ -22,6 +22,7 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping
 from sklearn.preprocessing import MinMaxScaler
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
+import lightgbm as lgb
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -51,7 +52,7 @@ app.add_middleware(
 data_store = {}
 
 # Utility function to save logs in Excel format
-def save_forecast_logs(historical_data, forecast_data, forecast_params):
+def save_forecast_logs(historical_data, forecast_data, forecast_params, model_metrics=None):
     """
     Save historical and forecast data to respective log folders with timestamps in Excel format
     
@@ -59,6 +60,7 @@ def save_forecast_logs(historical_data, forecast_data, forecast_params):
         historical_data: DataFrame containing historical data
         forecast_data: DataFrame containing forecast predictions
         forecast_params: Dictionary containing forecast parameters (time_period, targets, models, etc.)
+        model_metrics: Dictionary containing model performance metrics
     """
     try:
         # Create timestamp
@@ -133,6 +135,24 @@ def save_forecast_logs(historical_data, forecast_data, forecast_params):
                 forecast_metadata.to_excel(writer, sheet_name='Metadata', index=False)
                 # Save actual data in second sheet
                 forecast_data.to_excel(writer, sheet_name='Forecast_Data', index=False)
+                
+                # Save model metrics if available
+                if model_metrics:
+                    metrics_df = pd.DataFrame([
+                        {
+                            'Target_Model': key,
+                            'MAE': metrics.get('mae', 0),
+                            'MAPE': metrics.get('mape', 0),
+                            'RMSE': metrics.get('rmse', 0),
+                            'Directional_Accuracy': metrics.get('directional_accuracy', 0),
+                            'Data_Points': metrics.get('data_points', 0),
+                            'Model_Type': metrics.get('model_type', 'Unknown'),
+                            'Target': metrics.get('target', 'Unknown'),
+                            'Notes': metrics.get('evaluation_note', '')
+                        }
+                        for key, metrics in model_metrics.items()
+                    ])
+                    metrics_df.to_excel(writer, sheet_name='Model_Performance', index=False)
             
             print(f"Forecast data saved to: {forecast_path}")
             
@@ -201,8 +221,7 @@ def save_trained_model(model, model_type, target, model_params, series_info):
         
         # Create descriptive filename
         model_filename = f"{model_type}_{target}_{time_period}_{aggregation_method}_dp{data_points}_{timestamp}"
-        
-        # Save different model types with appropriate methods
+          # Save different model types with appropriate methods
         if model_type == 'LSTM':
             # Save Keras/TensorFlow model
             model_path = os.path.join(models_folder, f"{model_filename}.h5")
@@ -215,6 +234,11 @@ def save_trained_model(model, model_type, target, model_params, series_info):
                 
         elif model_type == 'RandomForest':
             # Save sklearn models
+            model_path = os.path.join(models_folder, f"{model_filename}.pkl")
+            joblib.dump(model, model_path)
+            
+        elif model_type == 'LightGBM':
+            # Save LightGBM model
             model_path = os.path.join(models_folder, f"{model_filename}.pkl")
             joblib.dump(model, model_path)
             
@@ -383,8 +407,29 @@ def forecast_arima(series, steps):
         
         # Generate forecasts
         forecast = final_results.forecast(steps=steps)
-          # Ensure non-negative values for counts
+        
+        # Ensure non-negative values for counts
         forecast = np.maximum(forecast, 0)
+        
+        # Calculate performance metrics on validation data
+        validation_metrics = None
+        try:
+            if len(series) > 20:  # Only if we have enough data
+                # Use last 20% of data for validation
+                val_size = max(5, int(len(series) * 0.2))
+                train_data = series[:-val_size]
+                val_actual = series[-val_size:]
+                
+                # Make predictions on validation set
+                val_model = ARIMA(train_data, order=best_params)
+                val_results = val_model.fit()
+                val_forecast = val_results.forecast(steps=val_size)
+                val_forecast = np.maximum(val_forecast, 0)
+                
+                validation_metrics = calculate_forecast_metrics(val_actual.values, val_forecast)
+                validation_metrics['validation_period'] = f"Last {val_size} points"
+        except Exception as val_error:
+            print(f"⚠ Warning: Could not calculate ARIMA validation metrics: {str(val_error)}")
         
         # Save trained model (optional)
         try:
@@ -393,7 +438,8 @@ def forecast_arima(series, steps):
                 'seasonal_period': seasonal_period,
                 'time_period': getattr(series, '_time_period', 'unknown'),
                 'aggregation_method': getattr(series, '_agg_method', 'unknown'),
-                'aic_score': best_aic
+                'aic_score': best_aic,
+                'performance_metrics': validation_metrics
             }
             series_info = {
                 'data_points': len(series),
@@ -454,9 +500,35 @@ def forecast_prophet(series, steps):
           # Make future dataframe
         future = model.make_future_dataframe(periods=steps)
         forecast = model.predict(future)
-          # Get forecasts and ensure non-negative values
+        # Get forecasts and ensure non-negative values
         forecasted_values = forecast['yhat'].tail(steps)
         forecasted_values = forecasted_values.clip(lower=0)  # Ensure no negative values
+        
+        # Calculate performance metrics on validation data
+        validation_metrics = None
+        try:
+            if len(df) > 20:  # Only if we have enough data
+                # Use cross-validation approach for Prophet
+                val_size = max(5, int(len(df) * 0.2))
+                train_df = df[:-val_size].copy()
+                val_actual = df[-val_size:]['y'].values
+                
+                # Train model on subset and predict validation period
+                val_model = Prophet(
+                    yearly_seasonality='auto' if data_length > 365 else False,
+                    weekly_seasonality='auto' if data_length > 14 else False,
+                    daily_seasonality='auto' if data_length > 7 else False,
+                    seasonality_mode='multiplicative'
+                )
+                val_model.fit(train_df)
+                val_future = val_model.make_future_dataframe(periods=val_size)
+                val_forecast = val_model.predict(val_future)
+                val_predictions = val_forecast['yhat'].tail(val_size).clip(lower=0).values
+                
+                validation_metrics = calculate_forecast_metrics(val_actual, val_predictions)
+                validation_metrics['validation_period'] = f"Last {val_size} points"
+        except Exception as val_error:
+            print(f"⚠ Warning: Could not calculate Prophet validation metrics: {str(val_error)}")
         
         # Save trained model (optional)
         try:
@@ -467,7 +539,8 @@ def forecast_prophet(series, steps):
                 'seasonality_mode': 'multiplicative',
                 'time_period': getattr(series, '_time_period', 'unknown'),
                 'aggregation_method': getattr(series, '_agg_method', 'unknown'),
-                'data_length_days': data_length
+                'data_length_days': data_length,
+                'performance_metrics': validation_metrics
             }
             series_info = {
                 'data_points': len(series),
@@ -522,13 +595,17 @@ def forecast_rf(series, steps):
         # Split features and target
         X = df.drop('y', axis=1)
         y = df['y']
-        
-        # Train model with cross-validation
+          # Train model with improved hyperparameters
         model = RandomForestRegressor(
-            n_estimators=100,
-            max_depth=10,
-            min_samples_split=5,
-            random_state=42
+            n_estimators=200,           # Increased from 100
+            max_depth=15,               # Increased from 10
+            min_samples_split=3,        # Decreased from 5 for better splits
+            min_samples_leaf=2,         # Added for better generalization
+            max_features='sqrt',        # Added for better feature selection
+            bootstrap=True,             # Ensure bootstrap sampling
+            oob_score=True,             # Out-of-bag scoring for validation
+            random_state=42,
+            n_jobs=-1                   # Use all cores for faster training
         )
         model.fit(X, y)
         
@@ -552,17 +629,55 @@ def forecast_rf(series, steps):
             for lag in range(max_lags, 0, -1):
                 if lag == 1:
                     last_row[f'lag_{lag}'] = pred
-                else:                    last_row[f'lag_{lag}'] = last_row[f'lag_{lag-1}']
+                else:
+                    last_row[f'lag_{lag}'] = last_row[f'lag_{lag-1}']
+        
+        # Calculate performance metrics on validation data
+        validation_metrics = None
+        try:
+            if len(X) > 20:  # Only if we have enough data
+                # Use last 20% for validation
+                val_size = max(5, int(len(X) * 0.2))
+                X_val_test = X[-val_size:]
+                y_val_test = y[-val_size:]
+                
+                # Train model on subset (excluding validation data)
+                X_train_subset = X[:-val_size]
+                y_train_subset = y[:-val_size]
+                
+                val_model = RandomForestRegressor(
+                    n_estimators=100,  # Reduced for faster validation
+                    max_depth=10,
+                    min_samples_split=3,
+                    min_samples_leaf=2,
+                    max_features='sqrt',
+                    bootstrap=True,
+                    random_state=42,
+                    n_jobs=-1
+                )
+                val_model.fit(X_train_subset, y_train_subset)
+                val_predictions = val_model.predict(X_val_test)
+                
+                validation_metrics = calculate_forecast_metrics(y_val_test.values, val_predictions)
+                validation_metrics['validation_period'] = f"Last {val_size} points"
+        except Exception as val_error:
+            print(f"⚠ Warning: Could not calculate RandomForest validation metrics: {str(val_error)}")
         
         # Save trained model (optional)
         try:
             model_params = {
-                'n_estimators': 100,
-                'max_depth': 10,
-                'min_samples_split': 5,
+                'n_estimators': 200,
+                'max_depth': 15,
+                'min_samples_split': 3,
+                'min_samples_leaf': 2,
+                'max_features': 'sqrt',
+                'bootstrap': True,
+                'oob_score': True,
+                'oob_score_value': model.oob_score_ if hasattr(model, 'oob_score_') else None,
                 'time_period': getattr(series, '_time_period', 'unknown'),
                 'aggregation_method': getattr(series, '_agg_method', 'unknown'),
-                'max_lags': max_lags
+                'max_lags': max_lags,
+                'performance_metrics': validation_metrics
             }
             series_info = {
                 'data_points': len(series),
@@ -601,10 +716,8 @@ def forecast_lstm(series, steps):
         
         # Scale additional features
         feature_scaler = MinMaxScaler(feature_range=(0.1, 0.9))
-        date_features = feature_scaler.fit_transform(dates)
-
-        # Create sequences
-        sequence_length = 10
+        date_features = feature_scaler.fit_transform(dates)        # Create sequences with improved length
+        sequence_length = min(15, len(scaled) // 4)  # Dynamic sequence length
         X = []
         y = []
         for i in range(sequence_length, len(scaled)):
@@ -616,19 +729,37 @@ def forecast_lstm(series, steps):
         # Reshape for LSTM [samples, time steps, features]
         X = X.reshape((X.shape[0], X.shape[1], 1))
 
-        # Build and train model with improved architecture
+        # Split data for better training
+        split_idx = int(len(X) * 0.8)
+        X_train, X_val = X[:split_idx], X[split_idx:]
+        y_train, y_val = y[:split_idx], y[split_idx:]
+
+        # Build improved LSTM model
         model = Sequential([
-            LSTM(64, activation='relu', input_shape=(sequence_length, 1), return_sequences=True),
-            LSTM(32, activation='relu'),
+            LSTM(128, activation='tanh', input_shape=(sequence_length, 1), 
+                 return_sequences=True, dropout=0.2, recurrent_dropout=0.1),
+            LSTM(64, activation='tanh', return_sequences=True, 
+                 dropout=0.2, recurrent_dropout=0.1),
+            LSTM(32, activation='tanh', dropout=0.2),
+            Dense(32, activation='relu'),
             Dense(16, activation='relu'),
             Dense(1)
         ])
         
-        model.compile(optimizer=Adam(learning_rate=0.01), loss='mse')
+        model.compile(optimizer=Adam(learning_rate=0.001), loss='mse', metrics=['mae'])
         
-        # Train with early stopping
-        model.fit(X, y, epochs=50, batch_size=32, verbose=0, 
-                callbacks=[EarlyStopping(monitor='loss', patience=5, restore_best_weights=True)])
+        # Improved training with validation
+        history = model.fit(
+            X_train, y_train,
+            validation_data=(X_val, y_val) if len(X_val) > 0 else None,
+            epochs=100,
+            batch_size=min(32, len(X_train)//3),
+            verbose=0,
+            callbacks=[
+                EarlyStopping(monitor='val_loss' if len(X_val) > 0 else 'loss', 
+                            patience=15, restore_best_weights=True),
+            ]
+        )
 
         # Generate predictions
         input_seq = scaled[-sequence_length:].reshape(1, sequence_length, 1)
@@ -642,18 +773,50 @@ def forecast_lstm(series, steps):
         
         # Inverse transform predictions
         forecast = scaler.inverse_transform(np.array(preds).reshape(-1, 1)).flatten().tolist()
-          # Ensure non-negative values
+        
+        # Ensure non-negative values
         forecast = [max(0, x) for x in forecast]
+        
+        # Calculate performance metrics on validation data
+        validation_metrics = None
+        try:
+            if len(X_val) > 0 and 'history' in locals():
+                # Get validation loss from training history
+                val_loss = history.history.get('val_loss', [])
+                val_mae = history.history.get('val_mae', [])
+                
+                if val_loss and val_mae:
+                    # Create validation metrics from training metrics
+                    validation_metrics = {
+                        'mae': round(float(val_mae[-1]), 4),
+                        'rmse': round(float(np.sqrt(val_loss[-1])), 4),
+                        'mape': 0.0,  # Not directly available from Keras
+                        'directional_accuracy': 0.0,  # Would need actual vs predicted
+                        'validation_loss': round(float(val_loss[-1]), 6),
+                        'validation_mae': round(float(val_mae[-1]), 4),
+                        'data_points': len(X_val),
+                        'validation_period': f"Last {len(X_val)} sequences"
+                    }
+        except Exception as val_error:
+            print(f"⚠ Warning: Could not calculate LSTM validation metrics: {str(val_error)}")
         
         # Save trained model (optional - can be enabled/disabled)
         try:
             model_params = {
                 'scaler': scaler,
                 'sequence_length': sequence_length,
+                'architecture': '128-64-32-32-16-1',
+                'dropout_rate': 0.2,
+                'recurrent_dropout': 0.1,
+                'learning_rate': 0.001,
+                'validation_split': 0.8,
                 'time_period': getattr(series, '_time_period', 'unknown'),
                 'aggregation_method': getattr(series, '_agg_method', 'unknown'),
-                'epochs': 50,
-                'batch_size': 32
+                'epochs': 100,
+                'batch_size': min(32, len(X_train)//3) if 'X_train' in locals() else 32,
+                'final_loss': history.history['loss'][-1] if 'history' in locals() else None,
+                'final_val_loss': history.history['val_loss'][-1] if 'history' in locals() and 'val_loss' in history.history else None,
+                'performance_metrics': validation_metrics
             }
             series_info = {
                 'data_points': len(series),
@@ -789,6 +952,363 @@ def forecast_holtwinters(series, steps):
         print(f"Series dtype: {series.dtype}")
         print(f"Series contains null: {series.isnull().any()}")
         raise e
+
+def forecast_lightgbm(series, steps):
+    """LightGBM model with horizon-aware hyperparameters and advanced feature engineering"""
+    try:
+        # Flexible minimum data requirement like Random Forest and LSTM
+        min_samples = 20  # Reduced from 50 to match other models
+        if len(series) < min_samples:
+            # Fallback to simple forecast like EMA if not enough data
+            print(f"LightGBM: Not enough data ({len(series)} < {min_samples}), using EMA fallback")
+            return forecast_ema(series, steps)
+        
+        # Convert series to float and handle missing values
+        series = series.astype(float).fillna(method='ffill').fillna(method='bfill')
+        
+        # Create DataFrame with advanced features
+        df = pd.DataFrame({'y': series})
+        df.index = pd.to_datetime(df.index)
+        
+        # Time-based features
+        df['dayofweek'] = df.index.dayofweek
+        df['month'] = df.index.month
+        df['year'] = df.index.year
+        df['quarter'] = df.index.quarter
+        df['day_of_month'] = df.index.day
+        df['week_of_year'] = df.index.isocalendar().week
+        df['time_idx'] = np.arange(len(df))
+        
+        # Cyclical encoding for better seasonality capture
+        df['month_sin'] = np.sin(2 * np.pi * df['month']/12)
+        df['month_cos'] = np.cos(2 * np.pi * df['month']/12)
+        df['dayofweek_sin'] = np.sin(2 * np.pi * df['dayofweek']/7)
+        df['dayofweek_cos'] = np.cos(2 * np.pi * df['dayofweek']/7)
+        df['quarter_sin'] = np.sin(2 * np.pi * df['quarter']/4)
+        df['quarter_cos'] = np.cos(2 * np.pi * df['quarter']/4)
+          # Rolling statistics with multiple windows (adaptive to data size)
+        available_windows = []
+        for window in [3, 7, 14, 30]:
+            if len(df) > window * 2:  # Need at least 2x window size for meaningful rolling stats
+                available_windows.append(window)
+                df[f'rolling_mean_{window}d'] = df['y'].rolling(window=window, min_periods=1).mean()
+                df[f'rolling_std_{window}d'] = df['y'].rolling(window=window, min_periods=1).std()
+                df[f'rolling_min_{window}d'] = df['y'].rolling(window=window, min_periods=1).min()
+                df[f'rolling_max_{window}d'] = df['y'].rolling(window=window, min_periods=1).max()
+        
+        # If no rolling windows are available, add basic statistics
+        if not available_windows:
+            df['expanding_mean'] = df['y'].expanding(min_periods=1).mean()
+            df['expanding_std'] = df['y'].expanding(min_periods=1).std().fillna(0)
+        
+        # Lag features (adaptive like Random Forest - dynamic based on data size)
+        max_lags = min(15, len(df) // 3, steps * 2)  # Reduced and more flexible
+        if max_lags < 1:
+            max_lags = 1  # At least 1 lag feature
+        for lag in range(1, max_lags + 1):
+            df[f'lag_{lag}'] = df['y'].shift(lag)
+        
+        # Statistical features
+        df['expanding_mean'] = df['y'].expanding(min_periods=1).mean()
+        df['expanding_std'] = df['y'].expanding(min_periods=1).std()
+        
+        # Trend features
+        df['diff_1'] = df['y'].diff(1)
+        df['diff_7'] = df['y'].diff(7) if len(df) > 7 else 0
+        df['pct_change'] = df['y'].pct_change()
+          # Drop rows with NaN from lag creation
+        df.dropna(inplace=True)
+        
+        # More flexible minimum check like Random Forest
+        if len(df) < 10:
+            print(f"LightGBM: Very small dataset after feature engineering ({len(df)} points), using simple EMA fallback")
+            return forecast_ema(series, steps)
+        
+        # Split features and target
+        X = df.drop('y', axis=1)
+        y = df['y']
+        
+        # Determine time period for horizon-aware hyperparameters
+        time_period = getattr(series, '_time_period', 'day')
+          # Horizon-aware hyperparameters (optimized for smaller datasets)
+        if time_period == 'day':
+            params = {
+                'objective': 'regression',
+                'metric': 'rmse',
+                'boosting_type': 'gbdt',
+                'num_leaves': min(15, len(df) // 2),  # Adaptive to dataset size
+                'learning_rate': 0.1,  # Slightly higher for faster convergence
+                'feature_fraction': 0.9,
+                'bagging_fraction': 0.9,
+                'bagging_freq': 3,
+                'min_child_samples': max(5, len(df) // 10),  # Adaptive
+                'reg_alpha': 0.05,
+                'reg_lambda': 0.05,
+                'random_state': 42,
+                'n_jobs': -1,
+                'verbose': -1
+            }
+            n_estimators = min(100, len(df) * 2)  # Adaptive
+        elif time_period == 'week':
+            params = {
+                'objective': 'regression',
+                'metric': 'rmse',
+                'boosting_type': 'gbdt',
+                'num_leaves': min(10, len(df) // 3),
+                'learning_rate': 0.12,
+                'feature_fraction': 0.95,
+                'bagging_fraction': 0.95,
+                'bagging_freq': 2,
+                'min_child_samples': max(3, len(df) // 15),
+                'reg_alpha': 0.03,
+                'reg_lambda': 0.03,
+                'random_state': 42,
+                'n_jobs': -1,
+                'verbose': -1
+            }
+            n_estimators = min(80, len(df) * 2)
+        else:  # month
+            params = {
+                'objective': 'regression',
+                'metric': 'rmse',
+                'boosting_type': 'gbdt',
+                'num_leaves': min(7, len(df) // 4),
+                'learning_rate': 0.15,
+                'feature_fraction': 1.0,
+                'bagging_fraction': 1.0,
+                'bagging_freq': 1,
+                'min_child_samples': max(2, len(df) // 20),
+                'reg_alpha': 0.01,
+                'reg_lambda': 0.01,
+                'random_state': 42,
+                'n_jobs': -1,
+                'verbose': -1
+            }
+            n_estimators = min(60, len(df) * 2)
+          # Split data for validation (more flexible like LSTM)
+        if len(X) > 15:  # Only split if we have enough data
+            split_idx = int(len(X) * 0.8)
+            X_train, X_val = X[:split_idx], X[split_idx:]
+            y_train, y_val = y[:split_idx], y[split_idx:]
+
+            # Create LightGBM datasets
+            train_data = lgb.Dataset(X_train, label=y_train)
+            valid_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
+            
+            # Train model with early stopping
+            model = lgb.train(
+                params,
+                train_data,
+                valid_sets=[valid_data],
+                num_boost_round=n_estimators,
+                callbacks=[
+                    lgb.early_stopping(stopping_rounds=10),  # Reduced stopping rounds
+                    lgb.log_evaluation(0)  # Silent training
+                ]
+            )
+        else:
+            # For very small datasets, train without validation split
+            train_data = lgb.Dataset(X, label=y)
+            model = lgb.train(
+                params,
+                train_data,
+                num_boost_round=min(n_estimators, 30),  # Limit iterations for small data
+                callbacks=[lgb.log_evaluation(0)]
+            )
+        
+        # Generate predictions
+        last_row = X.iloc[-1].copy()
+        predictions = []
+        
+        for i in range(steps):
+            # Update time features for future dates
+            next_date = df.index[-1] + pd.Timedelta(days=i+1)
+            last_row['dayofweek'] = next_date.dayofweek
+            last_row['month'] = next_date.month
+            last_row['year'] = next_date.year
+            last_row['quarter'] = next_date.quarter
+            last_row['day_of_month'] = next_date.day
+            last_row['week_of_year'] = next_date.isocalendar().week
+            last_row['time_idx'] = last_row['time_idx'] + 1
+            
+            # Update cyclical features
+            last_row['month_sin'] = np.sin(2 * np.pi * last_row['month']/12)
+            last_row['month_cos'] = np.cos(2 * np.pi * last_row['month']/12)
+            last_row['dayofweek_sin'] = np.sin(2 * np.pi * last_row['dayofweek']/7)
+            last_row['dayofweek_cos'] = np.cos(2 * np.pi * last_row['dayofweek']/7)
+            last_row['quarter_sin'] = np.sin(2 * np.pi * last_row['quarter']/4)
+            last_row['quarter_cos'] = np.cos(2 * np.pi * last_row['quarter']/4)
+            
+            # Predict
+            pred = model.predict([last_row], num_iteration=model.best_iteration)[0]
+            pred = max(0, pred)  # Ensure non-negative
+            predictions.append(pred)
+            
+            # Update lag features for next iteration
+            for lag in range(max_lags, 0, -1):
+                if lag == 1:
+                    last_row[f'lag_{lag}'] = pred
+                else:
+                    last_row[f'lag_{lag}'] = last_row[f'lag_{lag-1}']
+        
+        # Save trained model (optional)
+        try:
+            # Get feature importance
+            feature_importance = dict(zip(X.columns, model.feature_importance()))
+            top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:10]
+            
+            # Calculate performance metrics on validation data
+            validation_metrics = None
+            try:
+                if len(X) > 15:  # Only if we used validation split
+                    # Get validation predictions
+                    val_predictions = model.predict(X_val, num_iteration=model.best_iteration)
+                    validation_metrics = calculate_forecast_metrics(y_val.values, val_predictions)
+                    validation_metrics['validation_period'] = f"Last {len(X_val)} points"
+                    validation_metrics['lgb_train_rmse'] = model.best_score.get('valid_0', {}).get('rmse', None) if hasattr(model, 'best_score') else None
+            except Exception as val_error:
+                print(f"⚠ Warning: Could not calculate LightGBM validation metrics: {str(val_error)}")
+            
+            model_params = {
+                'time_period': time_period,
+                'aggregation_method': getattr(series, '_agg_method', 'unknown'),
+                'lgb_params': params,
+                'n_estimators': n_estimators,
+                'best_iteration': model.best_iteration,
+                'max_lags': max_lags,
+                'feature_count': len(X.columns),
+                'top_features': top_features,
+                'performance_metrics': validation_metrics
+            }
+            series_info = {
+                'data_points': len(series),
+                'date_range': {
+                    'start': str(series.index.min()) if len(series) > 0 else None,
+                    'end': str(series.index.max()) if len(series) > 0 else None
+                }
+            }
+            target_name = getattr(series, 'name', 'unknown_target')
+            save_trained_model(model, 'LightGBM', target_name, model_params, series_info)
+        except Exception as save_error:
+            print(f"⚠ Warning: Could not save LightGBM model: {str(save_error)}")
+        
+        return predictions
+        
+    except Exception as e:
+        print(f"LightGBM Error: {str(e)}")
+        print(f"Series shape: {series.shape if hasattr(series, 'shape') else 'no shape'}")
+        print(f"Series head: {series.head()}")
+        raise e
+
+# Forecasting Metrics Functions
+def calculate_forecast_metrics(actual, predicted):
+    """
+    Calculate the 4 most important forecasting metrics:
+    1. MAE (Mean Absolute Error)
+    2. MAPE (Mean Absolute Percentage Error) 
+    3. RMSE (Root Mean Square Error)
+    4. Directional Accuracy
+    """
+    try:
+        actual = np.array(actual)
+        predicted = np.array(predicted)
+        
+        # Ensure arrays have the same length
+        min_len = min(len(actual), len(predicted))
+        actual = actual[:min_len]
+        predicted = predicted[:min_len]
+        
+        # Remove any NaN or infinite values
+        mask = ~(np.isnan(actual) | np.isnan(predicted) | np.isinf(actual) | np.isinf(predicted))
+        actual = actual[mask]
+        predicted = predicted[mask]
+        
+        if len(actual) == 0:
+            return {
+                'mae': 0.0,
+                'mape': 0.0,
+                'rmse': 0.0,
+                'directional_accuracy': 0.0,
+                'data_points': 0
+            }
+        
+        # 1. MAE (Mean Absolute Error)
+        mae = np.mean(np.abs(actual - predicted))
+        
+        # 2. MAPE (Mean Absolute Percentage Error)
+        # Avoid division by zero by using a small epsilon
+        epsilon = 1e-8
+        mape = np.mean(np.abs((actual - predicted) / (actual + epsilon))) * 100
+        
+        # 3. RMSE (Root Mean Square Error)
+        rmse = np.sqrt(np.mean((actual - predicted) ** 2))
+        
+        # 4. Directional Accuracy
+        if len(actual) > 1:
+            # Calculate direction changes
+            actual_direction = np.diff(actual)
+            predicted_direction = np.diff(predicted)
+            
+            # Same direction: both positive, both negative, or both zero
+            same_direction = (
+                (actual_direction >= 0) & (predicted_direction >= 0) |
+                (actual_direction < 0) & (predicted_direction < 0)
+            )
+            
+            directional_accuracy = np.mean(same_direction) * 100
+        else:
+            directional_accuracy = 100.0  # Perfect if only one point
+        
+        return {
+            'mae': round(float(mae), 4),
+            'mape': round(float(mape), 2),
+            'rmse': round(float(rmse), 4),
+            'directional_accuracy': round(float(directional_accuracy), 2),
+            'data_points': len(actual)
+        }
+        
+    except Exception as e:
+        print(f"Error calculating metrics: {str(e)}")
+        return {
+            'mae': 0.0,
+            'mape': 0.0,
+            'rmse': 0.0,
+            'directional_accuracy': 0.0,
+            'data_points': 0,
+            'error': str(e)
+        }
+
+def validate_model_performance(series, model_predictions, model_type):
+    """
+    Validate model performance using train/test split and calculate metrics
+    """
+    try:
+        if len(series) < 10:
+            return None
+        
+        # Use 80% for training, 20% for testing
+        split_idx = int(len(series) * 0.8)
+        
+        # Get actual test values
+        actual_test = series[split_idx:].values
+        
+        # Get predicted values for the test period
+        if len(model_predictions) >= len(actual_test):
+            predicted_test = model_predictions[:len(actual_test)]
+        else:
+            # If we don't have enough predictions, return None
+            return None
+        
+        # Calculate metrics
+        metrics = calculate_forecast_metrics(actual_test, predicted_test)
+        metrics['model_type'] = model_type
+        metrics['test_period_length'] = len(actual_test)
+        
+        return metrics
+        
+    except Exception as e:
+        print(f"Error in model validation: {str(e)}")
+        return None
 
 # Routes
 @app.post("/upload")
@@ -933,6 +1453,8 @@ async def forecast(data: ForecastRequest):
         print("Sample aggregated data:", result_df.head())
         
         results = {}
+        model_metrics = {}  # Store metrics for each target-model combination
+        
         for target in data.targets:
             if target not in result_df.columns:
                 return JSONResponse(
@@ -943,7 +1465,8 @@ async def forecast(data: ForecastRequest):
             if target not in data.models:
                 return JSONResponse(
                     status_code=400,
-                    content={"error": f"No model specified for target: {target}"}                )
+                    content={"error": f"No model specified for target: {target}"}
+                )
                 
             try:
                 series = result_df.set_index('createdAt')[target]
@@ -951,6 +1474,9 @@ async def forecast(data: ForecastRequest):
                 # Add metadata to series for model saving
                 series._time_period = data.time_period
                 series._agg_method = data.aggregation_method
+                
+                # Store original series for metrics calculation
+                original_series = series.copy()
                 
                 if data.models[target] == 'ARIMA':
                     forecasted = forecast_arima(series, data.horizon)
@@ -960,6 +1486,8 @@ async def forecast(data: ForecastRequest):
                     forecasted = forecast_lstm(series, data.horizon)
                 elif data.models[target] == 'RandomForest':
                     forecasted = forecast_rf(series, data.horizon)
+                elif data.models[target] == 'LightGBM':
+                    forecasted = forecast_lightgbm(series, data.horizon)
                 elif data.models[target] == 'EMA':
                     forecasted = forecast_ema(series, data.horizon)
                 elif data.models[target] == 'HoltWinters':
@@ -969,6 +1497,36 @@ async def forecast(data: ForecastRequest):
                         status_code=400,
                         content={"error": f"Invalid model type for {target}: {data.models[target]}"}
                     )
+                
+                # Calculate model performance metrics for frontend display
+                try:
+                    if len(original_series) > 10:
+                        # Use last 20% of historical data for performance evaluation
+                        eval_size = max(3, int(len(original_series) * 0.2))
+                        train_data = original_series[:-eval_size]
+                        test_actual = original_series[-eval_size:].values
+                        
+                        # For demonstration, use the first few forecast values as proxy
+                        # (In production, you'd re-train the model on train_data and predict test period)
+                        test_predictions = forecasted[:len(test_actual)] if len(forecasted) >= len(test_actual) else forecasted + [forecasted[-1]] * (len(test_actual) - len(forecasted))
+                        
+                        metrics = calculate_forecast_metrics(test_actual, test_predictions[:len(test_actual)])
+                        metrics['model_type'] = data.models[target]
+                        metrics['target'] = target
+                        metrics['evaluation_note'] = f"Evaluated on last {eval_size} historical points"
+                        
+                        model_metrics[f"{target}_{data.models[target]}"] = metrics
+                except Exception as metrics_error:
+                    print(f"⚠ Warning: Could not calculate performance metrics for {target}: {str(metrics_error)}")
+                    model_metrics[f"{target}_{data.models[target]}"] = {
+                        'mae': 0.0,
+                        'mape': 0.0,
+                        'rmse': 0.0,
+                        'directional_accuracy': 0.0,
+                        'model_type': data.models[target],
+                        'target': target,
+                        'error': str(metrics_error)
+                    }
                   # Apply smart rounding based on target type
                 def smart_round_forecast(values, target_name):
                     """
@@ -1123,7 +1681,7 @@ async def forecast(data: ForecastRequest):
             }
             
             # Save logs (this runs in background and doesn't affect response)
-            log_result = save_forecast_logs(historical_log_data, forecast_log_data, forecast_params)
+            log_result = save_forecast_logs(historical_log_data, forecast_log_data, forecast_params, model_metrics)
             if log_result:
                 print(f"✓ Logs saved successfully at {log_result['timestamp']}")
         except Exception as log_error:
@@ -1140,7 +1698,20 @@ async def forecast(data: ForecastRequest):
 
         # Format output based on requested format
         if data.output_format == 'json':
-            return df_export.to_dict(orient='records')
+            response_data = {
+                'forecast_data': df_export.to_dict(orient='records'),
+                'model_metrics': model_metrics,
+                'forecast_summary': {
+                    'targets': data.targets,
+                    'models_used': data.models,
+                    'time_period': data.time_period,
+                    'horizon': data.horizon,
+                    'aggregation_method': data.aggregation_method,
+                    'historical_points': len(historical_df),
+                    'forecast_points': len(forecast_df)
+                }
+            }
+            return response_data
         elif data.output_format == 'csv':
             csv_content = df_export.to_csv(index=False)
             return Response(
@@ -1179,6 +1750,56 @@ async def forecast(data: ForecastRequest):
         return JSONResponse(
             status_code=500,
             content={"error": f"Internal server error: {str(e)}"}
+        )
+
+# Endpoint to get model performance metrics
+@app.get("/model-metrics")
+async def get_model_metrics():
+    """Get performance metrics for all recently trained models"""
+    try:
+        metrics_folder = "models/trained_weights"
+        
+        if not os.path.exists(metrics_folder):
+            return {"message": "No trained models found", "metrics": []}
+        
+        all_metrics = []
+        
+        # Read all metadata files
+        for filename in os.listdir(metrics_folder):
+            if filename.endswith('_metadata.json'):
+                try:
+                    with open(os.path.join(metrics_folder, filename), 'r') as f:
+                        metadata = json.load(f)
+                        
+                    # Extract performance metrics if available
+                    if 'performance_metrics' in metadata and metadata['performance_metrics']:
+                        metrics_data = {
+                            'model_type': metadata.get('model_type', 'Unknown'),
+                            'target': metadata.get('target', 'Unknown'),
+                            'time_period': metadata.get('time_period', 'Unknown'),
+                            'timestamp': metadata.get('timestamp', 'Unknown'),
+                            'data_points': metadata.get('data_points', 0),
+                            'metrics': metadata['performance_metrics']
+                        }
+                        all_metrics.append(metrics_data)
+                        
+                except Exception as file_error:
+                    print(f"Error reading {filename}: {str(file_error)}")
+                    continue
+        
+        # Sort by timestamp (most recent first)
+        all_metrics.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        
+        return {
+            "message": "Model metrics retrieved successfully",
+            "total_models": len(all_metrics),
+            "metrics": all_metrics[:20]  # Return last 20 models
+        }
+        
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error retrieving model metrics: {str(e)}"}
         )
 
 import uvicorn

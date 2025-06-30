@@ -11,6 +11,7 @@ import json
 import os
 import pickle
 import joblib
+import warnings
 
 # Forecasting libraries
 from statsmodels.tsa.arima.model import ARIMA
@@ -24,7 +25,6 @@ from sklearn.preprocessing import MinMaxScaler
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 import lightgbm as lgb
 
-import warnings
 warnings.filterwarnings("ignore")
 
 app = FastAPI()
@@ -332,16 +332,34 @@ def aggregate_targets(df, time_period='day', agg_method='mean'):
         # Set index for aggregation
         df.set_index('createdAt', inplace=True)
         
-        # Define aggregation functions
+        # Define aggregation functions based on available columns
         agg_func = {
             'transformOrdNo': 'count',  # Always count unique orders
             'quantity': agg_method,     # Use selected method
-            'workers_needed': agg_method,
             'woNumber': 'count'         # Always count work orders
         }
         
+        # Add workers_needed aggregation if column exists
+        if 'workers_needed' in df.columns:
+            agg_func['workers_needed'] = agg_method
+        
+        # Add product-related aggregations if product column exists
+        if 'product' in df.columns:
+            # Products target: count of unique products per time period
+            # This measures product variety/diversity in the business operations
+            agg_func['product'] = 'nunique'  # Count unique products - this will be renamed later
+            
+            # Note: Alternative aggregation options for Products target:
+            # 'count': Total product instances (volume) - typically 90-100 per day
+            # 'nunique': Unique product types (variety) - typically 76-96 per day
+            # Both metrics are valid but measure different business aspects
+        
         # Perform aggregation
         result_df = df.resample(freq).agg(agg_func)
+        
+        # Rename product column to Products if it exists
+        if 'product' in result_df.columns:
+            result_df = result_df.rename(columns={'product': 'Products'})
         
         # Handle missing values
         result_df = result_df.fillna(method='ffill').fillna(0)
@@ -479,12 +497,21 @@ def forecast_prophet(series, steps):
         # Calculate seasonality parameters
         data_length = (df['ds'].max() - df['ds'].min()).days
         
+        # Determine seasonality mode based on target characteristics
+        # For count-based targets with relatively stable ranges, use additive
+        # For highly variable targets like quantities, multiplicative may be better
+        target_name = getattr(series, 'name', 'unknown_target')
+        if target_name in ['Products', 'transformOrdNo', 'woNumber', 'workers_needed']:
+            seasonality_mode = 'additive'  # Count-based targets with stable ranges
+        else:
+            seasonality_mode = 'multiplicative'  # Variable targets like quantities
+        
         # Configure prophet based on data characteristics
         model = Prophet(
             yearly_seasonality='auto' if data_length > 365 else False,
             weekly_seasonality='auto' if data_length > 14 else False,
             daily_seasonality='auto' if data_length > 7 else False,
-            seasonality_mode='multiplicative'
+            seasonality_mode=seasonality_mode
         )
         
         # Add monthly seasonality if enough data
@@ -518,7 +545,7 @@ def forecast_prophet(series, steps):
                     yearly_seasonality='auto' if data_length > 365 else False,
                     weekly_seasonality='auto' if data_length > 14 else False,
                     daily_seasonality='auto' if data_length > 7 else False,
-                    seasonality_mode='multiplicative'
+                    seasonality_mode=seasonality_mode  # Use the same adaptive seasonality mode
                 )
                 val_model.fit(train_df)
                 val_future = val_model.make_future_dataframe(periods=val_size)
@@ -536,7 +563,7 @@ def forecast_prophet(series, steps):
                 'yearly_seasonality': 'auto',
                 'weekly_seasonality': 'auto', 
                 'daily_seasonality': 'auto',
-                'seasonality_mode': 'multiplicative',
+                'seasonality_mode': seasonality_mode,  # Use the adaptive mode
                 'time_period': getattr(series, '_time_period', 'unknown'),
                 'aggregation_method': getattr(series, '_agg_method', 'unknown'),
                 'data_length_days': data_length,
@@ -1342,7 +1369,28 @@ async def upload_files(
 
         df_header['createdAt'] = clean_datetime(df_header['createdAt'])
         df_items['quantity'] = df_items['quantity'].astype(float)
-        df_work['workers_needed'] = df_work['workers_needed'].astype(float)
+        
+        # Handle new workstation data structure with millisecond timestamps
+        # Convert millisecond timestamps to datetime
+        if 'toStartedAt' in df_work.columns and 'qaEndedAt' in df_work.columns:
+            df_work['toStartedAt'] = pd.to_datetime(df_work['toStartedAt'], unit='ms')
+            df_work['qaEndedAt'] = pd.to_datetime(df_work['qaEndedAt'], unit='ms')
+            
+            # Calculate time_taken_to_complete_order in minutes from millisecond timestamps
+            df_work['time_taken_minutes'] = (df_work['qaEndedAt'] - df_work['toStartedAt']).dt.total_seconds() / 60
+            
+            # Calculate workers_needed based on work complexity and time
+            # This is a business logic calculation - you may need to adjust based on your requirements
+            df_work['workers_needed'] = df_work.apply(lambda row: 
+                max(1, min(10, round(row['time_taken_minutes'] / 120, 1))), axis=1)  # 1-10 workers based on 2-hour chunks
+        elif 'workers_needed' in df_work.columns:
+            # Handle legacy data format
+            df_work['workers_needed'] = df_work['workers_needed'].astype(float)
+        else:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Workstation file must contain either 'workers_needed' column or 'toStartedAt'/'qaEndedAt' timestamp columns"}
+            )
 
         df_merged = pd.merge(df_header, df_items, left_on='transformOrdNo', right_on='transferOrdNo', how='inner')
         df_merged = pd.merge(df_merged, df_work, on=['transferOrdNo', 'woNumber'], how='inner')
@@ -1533,6 +1581,7 @@ async def forecast(data: ForecastRequest):
                     Apply appropriate rounding based on target type:
                     - Orders (transformOrdNo): Always ceil (can't have partial orders)
                     - Work Orders (woNumber): Always ceil (can't have partial work orders)  
+                    - Products: Always ceil (can't have partial unique products)
                     - Quantity: Floor (conservative estimate for inventory)
                     - Workers (workers_needed): Round to 1 decimal (allows part-time workers)
                     """
@@ -1540,8 +1589,8 @@ async def forecast(data: ForecastRequest):
                     for val in values:
                         if pd.isna(val):
                             rounded_values.append(0)
-                        elif target_name in ['transformOrdNo', 'woNumber']:
-                            # Orders and work orders must be whole numbers, use ceiling
+                        elif target_name in ['transformOrdNo', 'woNumber', 'Products']:
+                            # Orders, work orders, and unique products must be whole numbers, use ceiling
                             rounded_values.append(int(np.ceil(max(0, val))))
                         elif target_name == 'quantity':
                             # Quantities should be conservative (floor) for inventory planning
@@ -1556,6 +1605,25 @@ async def forecast(data: ForecastRequest):
                 
                 # Apply smart rounding instead of simple float conversion
                 forecasted = smart_round_forecast(forecasted, target)
+                
+                # Add validation to detect scale issues
+                if len(forecasted) > 0:
+                    forecast_mean = np.mean(forecasted)
+                    historical_mean = series.mean()
+                    historical_std = series.std()
+                    
+                    # Check if forecast values are completely out of reasonable range
+                    # Allow for some extrapolation but flag extreme deviations
+                    reasonable_upper_bound = historical_mean + 10 * historical_std
+                    reasonable_lower_bound = max(0, historical_mean - 10 * historical_std)
+                    
+                    if forecast_mean > reasonable_upper_bound or forecast_mean < reasonable_lower_bound:
+                        print(f"⚠ WARNING: {target} forecast scale issue detected!")
+                        print(f"   Historical mean: {historical_mean:.2f}, std: {historical_std:.2f}")
+                        print(f"   Forecast mean: {forecast_mean:.2f}")
+                        print(f"   Reasonable range: {reasonable_lower_bound:.2f} - {reasonable_upper_bound:.2f}")
+                        print(f"   Model: {data.models[target]}")
+                
                 results[target] = forecasted
                 
             except Exception as e:
@@ -1610,8 +1678,8 @@ async def forecast(data: ForecastRequest):
             df_copy = df.copy()
             for col in target_columns:
                 if col in df_copy.columns:
-                    if col in ['transformOrdNo', 'woNumber']:
-                        # Orders and work orders: integers (ceiling for forecasts, keep historical as-is)
+                    if col in ['transformOrdNo', 'woNumber', 'Products']:
+                        # Orders, work orders, and unique products: integers (ceiling for forecasts, keep historical as-is)
                         if 'type' in df_copy.columns:
                             forecast_mask = df_copy['type'] == 'forecast'
                             historical_mask = df_copy['type'] == 'historical'

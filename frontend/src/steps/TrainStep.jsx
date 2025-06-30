@@ -52,6 +52,12 @@ const TrainStep = () => {
             name: 'Holt-Winters',
             description: 'Triple exponential smoothing with seasonality',
             strengths: 'Excellent for data with clear seasonal patterns'
+        },
+        {
+            id: 'LightGBM',
+            name: 'LightGBM',
+            description: 'Gradient boosting framework for fast training',
+            strengths: 'Handles large datasets efficiently, good for structured data'
         }
     ];const handleTargetChange = (targetId) => {
         setSelectedTargets(prev => {

@@ -8,3 +8,4 @@ prophet
 tensorflow
 openpyxl
 python-multipart
+lightgbm

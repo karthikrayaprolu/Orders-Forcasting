@@ -6,7 +6,8 @@ const AVAILABLE_MODELS = {
     LSTM: 'LSTM',
     RandomForest: 'RandomForest',
     EMA: 'EMA',
-    HoltWinters: 'HoltWinters'
+    HoltWinters: 'HoltWinters',
+    LightGBM: 'LightGBM'
 };
 
 const VALID_TIME_PERIODS = ['day', 'week', 'month'];
@@ -164,6 +165,41 @@ export const getForecast = async (targets, models, horizon, timePeriod = 'day', 
         return true;
     } catch (error) {
         console.error('Forecast error:', error);
+        throw error;
+    }
+};
+
+export const getModelMetrics = async () => {
+    try {
+        console.log('Fetching model performance metrics...');
+        
+        const response = await fetch(`${API_BASE_URL}/model-metrics`, {
+            method: 'GET',
+            credentials: 'include',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            let errorMessage;
+            try {
+                const errorData = JSON.parse(errorText);
+                errorMessage = errorData.error || errorData.detail || 'Failed to fetch model metrics';
+            } catch {
+                errorMessage = errorText || `HTTP error! status: ${response.status}`;
+            }
+            throw new Error(errorMessage);
+        }
+
+        const data = await response.json();
+        console.log('Model metrics retrieved:', data);
+        return data;
+        
+    } catch (error) {
+        console.error('Model metrics error:', error);
         throw error;
     }
 };

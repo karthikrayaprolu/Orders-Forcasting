@@ -15,7 +15,8 @@ const modelTypes = [
     { id: 'LSTM', name: 'LSTM', description: 'Deep learning for complex patterns' },
     { id: 'RandomForest', name: 'Random Forest', description: 'Ensemble method for robust predictions' },
     { id: 'EMA', name: 'EMA', description: 'Simple and effective trend following' },
-    { id: 'HoltWinters', name: 'Holt-Winters', description: 'Triple exponential smoothing with seasonality' }
+    { id: 'HoltWinters', name: 'Holt-Winters', description: 'Triple exponential smoothing with seasonality' },
+    { id: 'LightGBM', name: 'LightGBM', description: 'Gradient boosting for high performance' }
 ];
 
 const Results = () => {    
@@ -25,7 +26,8 @@ const Results = () => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [selectedTarget, setSelectedTarget] = useState(null);
-    const [accuracyMetrics, setAccuracyMetrics] = useState(null);    const [configuration, setConfiguration] = useState({
+    const [accuracyMetrics, setAccuracyMetrics] = useState(null);    
+    const [configuration, setConfiguration] = useState({
         process: {
             horizon: 30,
             timePeriod: 'day',
@@ -66,6 +68,7 @@ const Results = () => {
         if (!results && storedResults) {
             try {
                 const parsedResults = JSON.parse(storedResults);
+                console.log('Loaded stored results structure:', parsedResults);
                 setResults(parsedResults);
             } catch (e) {
                 console.error('Failed to parse stored results:', e);
@@ -82,6 +85,7 @@ const Results = () => {
             getForecast(targets, modelSelections, horizon, timePeriod, aggregationMethod, 'json', false)
                 .then(data => {
                     if (data && !data.error) {
+                        console.log('Received forecast data structure:', data);
                         setResults(data);
                         localStorage.setItem('forecastResults', JSON.stringify(data));
                     } else {
@@ -99,11 +103,11 @@ const Results = () => {
 
     // Effect to set initial selected target
     useEffect(() => {
-        if (results && results.length > 0 && !selectedTarget) {
+        if (results && results.forecast_data && results.forecast_data.length > 0 && !selectedTarget) {
             // Find first available target from the selected targets
             const firstTarget = availableTargets.find(target => 
                 configuration.training.selectedTargets.includes(target.id) &&
-                results.some(r => r[target.id] !== undefined)
+                results.forecast_data.some(r => r[target.id] !== undefined)
             );
             if (firstTarget) {
                 setSelectedTarget(firstTarget);
@@ -456,9 +460,9 @@ const Results = () => {
         }        return { data: traces, layout };
     };    // Effect to update accuracy metrics when target changes
     useEffect(() => {
-        if (results && results.length > 0 && selectedTarget) {
-            const historicalData = results.filter(d => d.type === 'historical');
-            const forecastData = results.filter(d => d.type === 'forecast');
+        if (results && results.forecast_data && results.forecast_data.length > 0 && selectedTarget) {
+            const historicalData = results.forecast_data.filter(d => d.type === 'historical');
+            const forecastData = results.forecast_data.filter(d => d.type === 'forecast');
             const metrics = calculateAccuracyMetrics(historicalData, forecastData, selectedTarget.id);
             setAccuracyMetrics(metrics);
         }
@@ -466,7 +470,7 @@ const Results = () => {
 
     // Memoize chart data for all targets to avoid re-computation and fix hooks issue
     const chartsData = useMemo(() => {
-        if (!results || !results.length || !configuration.training.selectedTargets) {
+        if (!results || !results.forecast_data || !results.forecast_data.length || !configuration.training.selectedTargets) {
             return {};
         }
         
@@ -474,10 +478,10 @@ const Results = () => {
         availableTargets
             .filter(target => 
                 configuration.training.selectedTargets.includes(target.id) && 
-                results.some(r => r[target.id] !== undefined)
+                results.forecast_data.some(r => r[target.id] !== undefined)
             )
             .forEach(target => {
-                data[target.id] = createPlotlyChart(target, results, configuration.process?.timePeriod || 'day');
+                data[target.id] = createPlotlyChart(target, results.forecast_data, configuration.process?.timePeriod || 'day');
             });
         
         return data;
@@ -523,7 +527,7 @@ const Results = () => {
             mape: mape.toFixed(2) + '%'
         };
     };    const handleDownload = async () => {
-        if (!results || !results.length) {
+        if (!results || !results.forecast_data || !results.forecast_data.length) {
             toast.error('No forecast data available to download');
             return;
         }
@@ -598,7 +602,7 @@ const Results = () => {
         );
     }
 
-    if (!results || !results.length) {
+    if (!results || !results.forecast_data || !results.forecast_data.length) {
         return (
             <div className="max-w-4xl mx-auto p-6">
                 <p className="text-gray-500">No forecast results available. Please complete the training step first.</p>
@@ -689,11 +693,138 @@ const Results = () => {
                                 </div>
                             </div>
                         </div>
-                    </div>{/* Forecast Visualizations */}
+                    </div>
+
+                    {/* Model Performance Metrics */}
+                    {results && results.model_metrics && Object.keys(results.model_metrics).length > 0 && (
+                        <div className="mb-8 p-6 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border border-blue-200">
+                            <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center">
+                                <FiBarChart className="mr-2 text-blue-600" />
+                                Model Performance Metrics
+                            </h3>
+                            <p className="text-sm text-gray-600 mb-6">
+                                These metrics show how well each model performed on historical data. Lower values are generally better for MAE, MAPE, and RMSE, while higher values are better for Directional Accuracy.
+                            </p>
+                            
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                                {Object.entries(results.model_metrics).map(([modelKey, metrics]) => {
+                                    const [target, modelType] = modelKey.split('_');
+                                    const targetInfo = availableTargets.find(t => t.id === target);
+                                    
+                                    return (
+                                        <div key={modelKey} className="bg-white rounded-lg p-4 shadow-sm border border-gray-200">
+                                            <div className="text-center mb-4">
+                                                <h4 className="font-semibold text-gray-800">{targetInfo?.name || target}</h4>
+                                                <p className="text-sm text-blue-600 font-medium">{modelType}</p>
+                                            </div>
+                                            
+                                            <div className="space-y-3">
+                                                {/* MAE */}
+                                                <div className="flex items-center justify-between">
+                                                    <div className="flex items-center">
+                                                        <span className="text-sm font-medium text-gray-700">MAE</span>
+                                                        <div className="ml-1 group relative">
+                                                            <button className="text-gray-400 hover:text-gray-600 text-xs">
+                                                                ℹ️
+                                                            </button>
+                                                            <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs rounded py-2 px-3 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none z-10 w-64">
+                                                                <div className="font-semibold mb-1">Mean Absolute Error</div>
+                                                                <div>Average difference between predicted and actual values. Lower is better.</div>
+                                                                <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <span className="text-sm font-semibold text-gray-900">
+                                                        {typeof metrics.mae === 'number' ? metrics.mae.toFixed(2) : 'N/A'}
+                                                    </span>
+                                                </div>
+                                                
+                                                {/* MAPE */}
+                                                <div className="flex items-center justify-between">
+                                                    <div className="flex items-center">
+                                                        <span className="text-sm font-medium text-gray-700">MAPE</span>
+                                                        <div className="ml-1 group relative">
+                                                            <button className="text-gray-400 hover:text-gray-600 text-xs">
+                                                                ℹ️
+                                                            </button>
+                                                            <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs rounded py-2 px-3 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none z-10 w-64">
+                                                                <div className="font-semibold mb-1">Mean Absolute Percentage Error</div>
+                                                                <div>Average percentage difference. Shows relative error size. Lower is better.</div>
+                                                                <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <span className="text-sm font-semibold text-gray-900">
+                                                        {typeof metrics.mape === 'number' ? `${metrics.mape.toFixed(1)}%` : 'N/A'}
+                                                    </span>
+                                                </div>
+                                                
+                                                {/* RMSE */}
+                                                <div className="flex items-center justify-between">
+                                                    <div className="flex items-center">
+                                                        <span className="text-sm font-medium text-gray-700">RMSE</span>
+                                                        <div className="ml-1 group relative">
+                                                            <button className="text-gray-400 hover:text-gray-600 text-xs">
+                                                                ℹ️
+                                                            </button>
+                                                            <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs rounded py-2 px-3 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none z-10 w-64">
+                                                                <div className="font-semibold mb-1">Root Mean Square Error</div>
+                                                                <div>Emphasizes larger errors more than MAE. Lower is better.</div>
+                                                                <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <span className="text-sm font-semibold text-gray-900">
+                                                        {typeof metrics.rmse === 'number' ? metrics.rmse.toFixed(2) : 'N/A'}
+                                                    </span>
+                                                </div>
+                                                
+                                                {/* Directional Accuracy */}
+                                                <div className="flex items-center justify-between">
+                                                    <div className="flex items-center">
+                                                        <span className="text-sm font-medium text-gray-700">Direction</span>
+                                                        <div className="ml-1 group relative">
+                                                            <button className="text-gray-400 hover:text-gray-600 text-xs">
+                                                                ℹ️
+                                                            </button>
+                                                            <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs rounded py-2 px-3 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none z-10 w-64">
+                                                                <div className="font-semibold mb-1">Directional Accuracy</div>
+                                                                <div>Percentage of time the model correctly predicted if values would go up or down. Higher is better.</div>
+                                                                <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <span className="text-sm font-semibold text-gray-900">
+                                                        {typeof metrics.directional_accuracy === 'number' ? `${metrics.directional_accuracy.toFixed(1)}%` : 'N/A'}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            
+                                            {/* Evaluation note if available */}
+                                            {metrics.evaluation_note && (
+                                                <div className="mt-3 p-2 bg-gray-50 rounded text-xs text-gray-600">
+                                                    {metrics.evaluation_note}
+                                                </div>
+                                            )}
+                                            
+                                            {/* Error message if metrics failed */}
+                                            {metrics.error && (
+                                                <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-600">
+                                                    Metrics unavailable: {metrics.error}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Forecast Visualizations */}
                     <div className="space-y-8">                        {availableTargets
                             .filter(target => 
                                 configuration.training.selectedTargets.includes(target.id) && 
-                                results.some(r => r[target.id] !== undefined)
+                                results.forecast_data.some(r => r[target.id] !== undefined)
                             )
                             .map((target) => {
                                 // Get pre-computed chart data
@@ -706,8 +837,8 @@ const Results = () => {
                                 
                                 {/* Accuracy Metrics */}
                                 {calculateAccuracyMetrics(
-                                    results.filter(d => d.type === 'historical'),
-                                    results.filter(d => d.type === 'forecast'),
+                                    results.forecast_data.filter(d => d.type === 'historical'),
+                                    results.forecast_data.filter(d => d.type === 'forecast'),
                                     target.id
                                 ) && (
                                     <div className="grid grid-cols-3 gap-4 mb-6">
@@ -715,8 +846,8 @@ const Results = () => {
                                             <div className="text-sm text-gray-500">RMSE</div>
                                             <div className="text-xl font-semibold text-gray-800">
                                                 {calculateAccuracyMetrics(
-                                                    results.filter(d => d.type === 'historical'),
-                                                    results.filter(d => d.type === 'forecast'),
+                                                    results.forecast_data.filter(d => d.type === 'historical'),
+                                                    results.forecast_data.filter(d => d.type === 'forecast'),
                                                     target.id
                                                 ).rmse}
                                             </div>
@@ -725,8 +856,8 @@ const Results = () => {
                                             <div className="text-sm text-gray-500">MAE</div>
                                             <div className="text-xl font-semibold text-gray-800">
                                                 {calculateAccuracyMetrics(
-                                                    results.filter(d => d.type === 'historical'),
-                                                    results.filter(d => d.type === 'forecast'),
+                                                    results.forecast_data.filter(d => d.type === 'historical'),
+                                                    results.forecast_data.filter(d => d.type === 'forecast'),
                                                     target.id
                                                 ).mae}
                                             </div>
@@ -735,8 +866,8 @@ const Results = () => {
                                             <div className="text-sm text-gray-500">MAPE</div>
                                             <div className="text-xl font-semibold text-gray-800">
                                                 {calculateAccuracyMetrics(
-                                                    results.filter(d => d.type === 'historical'),
-                                                    results.filter(d => d.type === 'forecast'),
+                                                    results.forecast_data.filter(d => d.type === 'historical'),
+                                                    results.forecast_data.filter(d => d.type === 'forecast'),
                                                     target.id
                                                 ).mape}
                                             </div>

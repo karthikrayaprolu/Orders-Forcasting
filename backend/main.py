@@ -1379,10 +1379,18 @@ async def upload_files(
             # Calculate time_taken_to_complete_order in minutes from millisecond timestamps
             df_work['time_taken_minutes'] = (df_work['qaEndedAt'] - df_work['toStartedAt']).dt.total_seconds() / 60
             
+            # Calculate duration_hours for compatibility
+            df_work['duration_hours'] = df_work['time_taken_minutes'] / 60
+            
             # Calculate workers_needed based on work complexity and time
             # This is a business logic calculation - you may need to adjust based on your requirements
             df_work['workers_needed'] = df_work.apply(lambda row: 
                 max(1, min(10, round(row['time_taken_minutes'] / 120, 1))), axis=1)  # 1-10 workers based on 2-hour chunks
+                
+            # Add transferOrdNo to workstation table by merging with items table
+            # This creates the missing transferOrdNo column based on woNumber
+            df_work = pd.merge(df_work, df_items[['woNumber', 'transferOrdNo']], on='woNumber', how='left')
+            
         elif 'workers_needed' in df_work.columns:
             # Handle legacy data format
             df_work['workers_needed'] = df_work['workers_needed'].astype(float)
